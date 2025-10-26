@@ -58,7 +58,7 @@
         // V9 Firebase 모듈 CDN 로드 (serverTimestamp 추가)
         import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        // ⭐ 수정: serverTimestamp 함수를 import하고 전역에 노출합니다.
+        // serverTimestamp 함수를 import하고 전역에 노출합니다.
         import { getFirestore, doc, setDoc, updateDoc, onSnapshot, runTransaction, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // 서비스 초기화
@@ -83,7 +83,6 @@
         window.runTransaction = runTransaction;
         window.signInAnonymously = signInAnonymously;
         window.signInWithCustomToken = signInWithCustomToken;
-        // ⭐ 수정: serverTimestamp를 전역에 노출합니다.
         window.serverTimestamp = serverTimestamp;
         
     </script>
@@ -104,11 +103,13 @@
           
           // DB 상태: seats (배정 정보), ticketingActive (관리자 ON/OFF), ticketingStartsAt (카운트다운 시점)
           const [ticketingActive, setTicketingActive] = React.useState(false); 
-          // ⭐ 수정: ticketingStartsAt이 Firestore Timestamp 객체가 될 수 있습니다.
           const [ticketingStartsAt, setTicketingStartsAt] = React.useState(null); 
           const [seats, setSeats] = React.useState({}); 
           const [dataLoading, setDataLoading] = React.useState(true);
           
+          // ⭐ 새로 추가된 상태: 관리자 기기에서 로컬 선점을 시작한 시간 (지연 시간 보정용)
+          const [localPreemptionStart, setLocalPreemptionStart] = React.useState(null); 
+
           // 학생 UI 상태
           const [studentName, setStudentName] = React.useState('');
           const [hasAssignedSeat, setHasAssignedSeat] = React.useState(false);
@@ -215,8 +216,13 @@
                   const data = docSnapshot.data();
                   setSeats(data.seats || {});
                   setTicketingActive(!!data.ticketingActive);
-                  // ⭐ 수정: Firestore Timestamp 객체를 그대로 저장합니다.
                   setTicketingStartsAt(data.ticketingStartsAt || null); 
+                  
+                  // ⭐ 수정: DB 데이터가 도착하면 로컬 선점 상태를 해제합니다.
+                  if (data.ticketingStartsAt) {
+                      setLocalPreemptionStart(null);
+                  }
+                  
                 } else {
                   // 문서가 없으면 초기 상태로 생성
                   window.setDoc(docRef, { seats: {}, ticketingActive: false, ticketingStartsAt: null }).catch(e => console.error("Initial doc set error:", e));
@@ -237,24 +243,43 @@
               let intervalId = null;
               
               const checkCountdown = () => {
-                  // ⭐ 수정: ticketingStartsAt이 null이 아니며, Timestamp 객체의 toMillis() 메서드가 있는지 확인합니다.
+                  let remaining = -1; // -1: 계산 전, 0: 종료, >0: 남은 시간
+
+                  // 1. ⭐ 로컬 선점 시간 계산 (관리자 기기에서만 초기 2초간 사용됨)
+                  if (localPreemptionStart) {
+                      const now = Date.now();
+                      const targetTime = localPreemptionStart + window.COUNTDOWN_DURATION_MS;
+                      remaining = targetTime - now;
+                      
+                      if (remaining <= 0) {
+                          // 로컬 카운트다운은 끝났지만, DB 동기화가 아직 안 된 경우를 대비하여 타이머는 유지
+                          setLocalPreemptionStart(null); 
+                          remaining = 0;
+                      }
+                  } 
+                  
+                  // 2. ⭐ DB 서버 시간 계산 (모든 클라이언트가 동기화된 후 사용됨)
                   if (ticketingStartsAt && typeof ticketingStartsAt.toMillis === 'function') {
                       const now = Date.now();
                       
-                      // ⭐ 수정: 서버 시간(ticketingStartsAt)을 기준으로 5초(COUNTDOWN_DURATION_MS)를 더해 목표 시간을 계산합니다.
+                      // 서버 시간(ticketingStartsAt)을 기준으로 5초(COUNTDOWN_DURATION_MS)를 더해 목표 시간을 계산합니다.
                       const serverStartTimeMs = ticketingStartsAt.toMillis();
                       const targetTime = serverStartTimeMs + window.COUNTDOWN_DURATION_MS; 
                       
-                      const remaining = targetTime - now;
+                      remaining = targetTime - now;
                       
-                      if (remaining > 0) {
-                          // 남은 시간(초) 계산 및 설정
-                          setCountdownSeconds(Math.ceil(remaining / 1000));
-                          
-                      } else {
-                          // 카운트다운 종료 (0초)
-                          setCountdownSeconds(0);
-                          if (intervalId) clearInterval(intervalId);
+                      if (remaining < 0) {
+                          remaining = 0;
+                      }
+                  } 
+                  
+                  // 3. 최종 상태 업데이트
+                  if (remaining >= 0) {
+                      // 남은 시간(초) 계산 및 설정
+                      setCountdownSeconds(Math.ceil(remaining / 1000));
+                      
+                      if (remaining <= 0 && intervalId) {
+                           clearInterval(intervalId);
                       }
                   } else {
                       // 티켓팅 시작 시점이 설정되지 않았거나, Timestamp 객체가 로드되지 않았으면 타이머 해제
@@ -270,7 +295,7 @@
               return () => {
                   if (intervalId) clearInterval(intervalId);
               };
-          }, [ticketingStartsAt]); // ticketingStartsAt이 업데이트될 때마다 재실행
+          }, [ticketingActive, ticketingStartsAt, localPreemptionStart]); // 관련 상태가 업데이트될 때마다 재실행
 
           // --- Derived State ---
           
@@ -303,7 +328,11 @@
           const startTicketing = async () => {
             if (!window.db) return showMessage('DB 연결 실패', 'error');
             try {
-                // ⭐ 수정: Firestore 서버 시간으로 `ticketingStartsAt`을 설정하여 클라이언트 시간 오차를 제거합니다.
+                // ⭐ 수정: 1. 로컬 선점 시간 설정 (관리자 기기에서 즉시 5초를 볼 수 있도록)
+                setLocalPreemptionStart(Date.now()); 
+                setTicketingActive(true); // UI를 즉시 업데이트하여 카운트다운 시작 화면을 띄움
+                
+                // ⭐ 수정: 2. Firestore 서버 시간으로 `ticketingStartsAt`을 설정하여 클라이언트 시간 오차를 제거합니다.
                 const docRef = window.doc(window.db, globalStateDocPath);
                 await window.updateDoc(docRef, { 
                     ticketingActive: true, 
@@ -312,6 +341,7 @@
                 showMessage('카운트다운 시작! 5초 후 티켓팅이 시작됩니다!', 'success');
             } catch (e) {
                 console.error("Error starting ticketing:", e);
+                setLocalPreemptionStart(null); // 실패하면 로컬 선점도 취소
                 showMessage('티켓팅 시작 실패 (콘솔 오류 확인)', 'error');
             }
           };
@@ -322,6 +352,7 @@
                 const docRef = window.doc(window.db, globalStateDocPath);
                 // 티켓팅 상태 및 카운트다운 타임스탬프 모두 초기화
                 await window.updateDoc(docRef, { ticketingActive: false, ticketingStartsAt: null });
+                setLocalPreemptionStart(null); // 로컬 선점 상태도 해제
                 showMessage('티켓팅이 정지되었습니다', 'info');
             } catch (e) {
                 console.error("Error stopping ticketing:", e);
@@ -337,6 +368,7 @@
                     const docRef = window.doc(window.db, globalStateDocPath);
                     // 모든 상태를 초기화
                     await window.setDoc(docRef, { seats: {}, ticketingActive: false, ticketingStartsAt: null });
+                    setLocalPreemptionStart(null);
                     setStudentName('');
                     showMessage('초기화가 완료되었습니다', 'info');
                     setShowConfirmModal(false);
@@ -349,31 +381,36 @@
             setShowConfirmModal(true);
           };
           
+          // ⭐ 복구된 관리자 좌석 취소 함수
           const handleAdminSeatCancel = (seatNum) => {
+            // 취소 확인 모달을 띄우는 함수
             setConfirmMessage(`${seats[seatNum]}님의 ${seatNum}번 좌석 배정을 취소하시겠습니까?`);
             setConfirmAction(() => async () => {
                 if (!window.db) return showMessage('DB 연결 실패', 'error');
                 try {
                     const newSeats = { ...seats };
                     delete newSeats[seatNum];
+                    
+                    // DB에 업데이트를 위해 새로운 객체를 사용
                     const docRef = window.doc(window.db, globalStateDocPath);
-                    await window.updateDoc(docRef, { seats: newSeats });
+                    await window.updateDoc(docRef, { seats: newSeats }); 
+                    
                     showMessage('좌석 배정이 취소되었습니다', 'info');
-                    setShowConfirmModal(false);
+                    setShowConfirmModal(false); // 모달 닫기
                 } catch (e) {
                     console.error("Error cancelling seat:", e);
                     showMessage('취소 실패 (콘솔 오류 확인)', 'error');
-                    setShowConfirmModal(false);
+                    setShowConfirmModal(false); // 모달 닫기
                 }
             });
-            setShowConfirmModal(true);
+            setShowConfirmModal(true); // 모달 띄우기
           };
 
 
           // --- Student Seat Assignment Logic (Firestore Transaction) ---
 
           const handleSeatClick = async (seatNum) => {
-            // 관리자 모드에서 이미 배정된 좌석 클릭 시 취소 모드로 전환
+            // ⭐ 관리자 모드에서 이미 배정된 좌석 클릭 시 취소 모드로 전환
             if (adminMode && seats[seatNum]) {
               handleAdminSeatCancel(seatNum);
               return;
@@ -455,6 +492,7 @@
           const getSeatColor = (seatNum) => {
             if (seats[seatNum]) {
                 // 배정된 좌석
+                // ⭐ 관리자 모드에서는 취소 가능하도록 빨간색 호버 효과 추가
                 return adminMode 
                     ? 'bg-blue-600 text-white hover:bg-red-500 cursor-pointer shadow-xl' 
                     : 'bg-blue-600 text-white cursor-default shadow-xl'; 
@@ -476,9 +514,6 @@
             if (messageType === 'error') return 'bg-red-600';
             return 'bg-indigo-600';
           };
-          
-          // 이름 입력 필드의 비활성화 상태는 그대로 유지합니다.
-          // const isNameInputDisabled = processing || hasAssignedSeat || dataLoading;
           
           // 로딩 상태 표시
           if (dataLoading) {
@@ -583,7 +618,7 @@
                     <div className="flex items-center gap-4">
                       {/* 아이콘: users */}
                       <div dangerouslySetInnerHTML={{ __html: renderLucideIcon('users', 'w-10 h-10 text-indigo-600') }} />
-                      <h1 className="text-4xl font-extrabold text-gray-800">1학년 6반 자리 티켓팅</h1>
+                      <h1 className="text-4xl font-extrabold text-gray-800">실시간 좌석 배치 시스템 (DB 연동)</h1>
                       
                       {/* 상태 표시 */}
                       {isTicketingLive && (
@@ -682,7 +717,7 @@
                             ? "여기에 이름을 입력하고 좌석을 선택하세요." 
                             : (countdownSeconds > 0 
                                 ? `이름을 미리 입력하세요. ${countdownSeconds}초 후 좌석 선택 가능!` 
-                                : "이름을 미리 입력하세요.")
+                                : "이름을 미리 입력하세요. 관리자가 티켓팅을 시작해야 좌석 선택 가능!")
                         }
                         disabled={isNameInputDisabled}
                         className="w-full px-5 py-3 text-xl border-2 border-indigo-400 rounded-xl focus:ring-4 focus:ring-indigo-300 focus:border-indigo-500 disabled:bg-gray-100 disabled:text-gray-500 transition"
@@ -731,13 +766,15 @@
                                   return (
                                     <button
                                       key={seatNum}
+                                      // ⭐ 좌석 클릭 핸들러: 관리자 모드 시 취소 기능을 포함하도록 handleSeatClick을 호출
                                       onClick={() => handleSeatClick(seatNum)}
                                       // 버튼 비활성화 조건: 티켓팅 비활성화, 처리 중, 이미 배정됨, 카운트다운 중
-                                      disabled={!isTicketingLive && !adminMode || processing || seats[seatNum] || countdownSeconds > 0} 
+                                      // 단, adminMode일 때는 배정된 좌석이라도 클릭 가능해야 취소가 됩니다.
+                                      disabled={!isTicketingLive && !adminMode || processing || (seats[seatNum] && !adminMode) || countdownSeconds > 0} 
                                       className={`rounded-xl font-extrabold transition-all duration-200 transform shadow-lg text-sm flex flex-col items-center justify-center 
                                         ${getSeatColor(seatNum)}
                                         w-20 h-20 
-                                        ${seats[seatNum] ? 'hover:scale-100' : 'hover:scale-105'}
+                                        ${seats[seatNum] ? (adminMode ? 'hover:scale-105' : 'hover:scale-100') : 'hover:scale-105'}
                                       `}
                                     >
                                       <div className={`text-xs opacity-70 mb-1`}>{seatNum}번</div>
@@ -765,17 +802,27 @@
                       <span>준비/처리 중</span>
                     </div>
                     <div className="flex items-center gap-2">
+                      <div className="w-6 h-6 bg-yellow-100 border border-yellow-300 rounded-lg shadow-md opacity-70"></div>
+                      <span className="text-yellow-700">카운트다운 중</span>
+                    </div>
+                    <div className="flex items-center gap-2">
                       <div className="w-6 h-6 bg-green-100 border border-green-300 rounded-lg shadow-md"></div>
                       <span className="text-green-700">선택 가능 (LIVE)</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="w-6 h-6 bg-yellow-400 rounded-lg shadow-lg animate-pulse"></div>
-                      <span className="text-yellow-700">배정 시도 중</span>
+                      <span className="text-yellow-700">배정 시도 중 (3초 딜레이)</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="w-6 h-6 bg-blue-600 rounded-lg shadow-xl"></div>
-                      <span className="text-blue-700">배정 완료</span>
+                      <span className="text-blue-700">배정 완료 (DB에 기록됨)</span>
                     </div>
+                    {adminMode && (
+                        <div className="flex items-center gap-2">
+                            <div className="w-6 h-6 bg-blue-600 rounded-lg shadow-xl hover:bg-red-500 transition-colors duration-200"></div>
+                            <span className="text-red-500 font-bold">관리자: 취소 가능</span>
+                        </div>
+                    )}
                   </div>
                 </div>
               </div>
