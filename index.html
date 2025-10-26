@@ -15,15 +15,6 @@
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;800&display=swap');
         body { font-family: 'Inter', sans-serif; }
-        
-        /* 카운트다운의 극적인 효과를 위한 커스텀 키프레임 */
-        @keyframes dramatic-pulse {
-            0%, 100% { transform: scale(1); opacity: 1; }
-            50% { transform: scale(1.1); opacity: 0.8; }
-        }
-        .animate-dramatic-pulse {
-            animation: dramatic-pulse 0.5s ease-in-out infinite alternate;
-        }
     </style>
 </head>
 <body>
@@ -47,7 +38,6 @@
         };
         const ADMIN_PASSWORD = '0501!'; // 관리자 비밀번호
         const TOTAL_SEATS = 31; // 총 좌석 수
-        const COUNTDOWN_DURATION_MS = 5000; // 카운트다운 딜레이 5초 (5000ms)
         // ==============================================================================
 
         // 캔버스 환경 변수 사용 및 대체
@@ -55,11 +45,11 @@
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : MANUAL_FIREBASE_CONFIG;
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-        // V9 Firebase 모듈 CDN 로드 (serverTimestamp 추가)
+        // V9 Firebase 모듈 CDN 로드 (serverTimestamp 제거)
         import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        // serverTimestamp 함수를 import하고 전역에 노출합니다.
-        import { getFirestore, doc, setDoc, updateDoc, onSnapshot, runTransaction, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        // serverTimestamp import 제거
+        import { getFirestore, doc, setDoc, updateDoc, onSnapshot, runTransaction } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // 서비스 초기화
         const app = initializeApp(firebaseConfig);
@@ -73,7 +63,6 @@
         window.initialAuthToken = initialAuthToken;
         window.ADMIN_PASSWORD = ADMIN_PASSWORD;
         window.TOTAL_SEATS = TOTAL_SEATS;
-        window.COUNTDOWN_DURATION_MS = COUNTDOWN_DURATION_MS;
 
         // V9 함수들을 전역에 노출
         window.doc = doc;
@@ -83,7 +72,6 @@
         window.runTransaction = runTransaction;
         window.signInAnonymously = signInAnonymously;
         window.signInWithCustomToken = signInWithCustomToken;
-        window.serverTimestamp = serverTimestamp;
         
     </script>
 
@@ -101,15 +89,11 @@
           const [password, setPassword] = React.useState('');
           const [showPasswordModal, setShowPasswordModal] = React.useState(false);
           
-          // DB 상태: seats (배정 정보), ticketingActive (관리자 ON/OFF), ticketingStartsAt (카운트다운 시점)
+          // DB 상태: seats (배정 정보), ticketingActive (관리자 ON/OFF)
           const [ticketingActive, setTicketingActive] = React.useState(false); 
-          const [ticketingStartsAt, setTicketingStartsAt] = React.useState(null); 
           const [seats, setSeats] = React.useState({}); 
           const [dataLoading, setDataLoading] = React.useState(true);
           
-          // ⭐ 새로 추가된 상태: 관리자 기기에서 로컬 선점을 시작한 시간 (지연 시간 보정용)
-          const [localPreemptionStart, setLocalPreemptionStart] = React.useState(null); 
-
           // 학생 UI 상태
           const [studentName, setStudentName] = React.useState('');
           const [hasAssignedSeat, setHasAssignedSeat] = React.useState(false);
@@ -122,9 +106,6 @@
           const [showConfirmModal, setShowConfirmModal] = React.useState(false);
           const [confirmAction, setConfirmAction] = React.useState(null); 
           const [confirmMessage, setConfirmMessage] = React.useState('');
-
-          // 카운트다운 상태 (초)
-          const [countdownSeconds, setCountdownSeconds] = React.useState(null); 
           
           // 교실 좌석 구조 정의
           const seatStructure = [
@@ -215,17 +196,12 @@
                 if (docSnapshot.exists()) {
                   const data = docSnapshot.data();
                   setSeats(data.seats || {});
-                  setTicketingActive(!!data.ticketingActive);
-                  setTicketingStartsAt(data.ticketingStartsAt || null); 
-                  
-                  // ⭐ 수정: DB 데이터가 도착하면 로컬 선점 상태를 해제합니다.
-                  if (data.ticketingStartsAt) {
-                      setLocalPreemptionStart(null);
-                  }
+                  // 티켓팅 활성화 상태만 체크
+                  setTicketingActive(!!data.ticketingActive); 
                   
                 } else {
-                  // 문서가 없으면 초기 상태로 생성
-                  window.setDoc(docRef, { seats: {}, ticketingActive: false, ticketingStartsAt: null }).catch(e => console.error("Initial doc set error:", e));
+                  // 문서가 없으면 초기 상태로 생성 (ticketingStartsAt 필드 제거)
+                  window.setDoc(docRef, { seats: {}, ticketingActive: false }).catch(e => console.error("Initial doc set error:", e));
                 }
               }, (error) => {
                 console.error("Firestore snapshot error:", error);
@@ -238,69 +214,10 @@
             return () => unsubscribe();
           }, []); 
           
-          // --- Countdown Timer Logic ---
-          React.useEffect(() => {
-              let intervalId = null;
-              
-              const checkCountdown = () => {
-                  let remaining = -1; // -1: 계산 전, 0: 종료, >0: 남은 시간
-
-                  // 1. ⭐ 로컬 선점 시간 계산 (관리자 기기에서만 초기 2초간 사용됨)
-                  if (localPreemptionStart) {
-                      const now = Date.now();
-                      const targetTime = localPreemptionStart + window.COUNTDOWN_DURATION_MS;
-                      remaining = targetTime - now;
-                      
-                      if (remaining <= 0) {
-                          // 로컬 카운트다운은 끝났지만, DB 동기화가 아직 안 된 경우를 대비하여 타이머는 유지
-                          setLocalPreemptionStart(null); 
-                          remaining = 0;
-                      }
-                  } 
-                  
-                  // 2. ⭐ DB 서버 시간 계산 (모든 클라이언트가 동기화된 후 사용됨)
-                  if (ticketingStartsAt && typeof ticketingStartsAt.toMillis === 'function') {
-                      const now = Date.now();
-                      
-                      // 서버 시간(ticketingStartsAt)을 기준으로 5초(COUNTDOWN_DURATION_MS)를 더해 목표 시간을 계산합니다.
-                      const serverStartTimeMs = ticketingStartsAt.toMillis();
-                      const targetTime = serverStartTimeMs + window.COUNTDOWN_DURATION_MS; 
-                      
-                      remaining = targetTime - now;
-                      
-                      if (remaining < 0) {
-                          remaining = 0;
-                      }
-                  } 
-                  
-                  // 3. 최종 상태 업데이트
-                  if (remaining >= 0) {
-                      // 남은 시간(초) 계산 및 설정
-                      setCountdownSeconds(Math.ceil(remaining / 1000));
-                      
-                      if (remaining <= 0 && intervalId) {
-                           clearInterval(intervalId);
-                      }
-                  } else {
-                      // 티켓팅 시작 시점이 설정되지 않았거나, Timestamp 객체가 로드되지 않았으면 타이머 해제
-                      setCountdownSeconds(null);
-                      if (intervalId) clearInterval(intervalId);
-                  }
-              };
-
-              // 100ms 마다 체크하여 부드러운 카운트다운 구현
-              checkCountdown(); 
-              intervalId = setInterval(checkCountdown, 100); 
-
-              return () => {
-                  if (intervalId) clearInterval(intervalId);
-              };
-          }, [ticketingActive, ticketingStartsAt, localPreemptionStart]); // 관련 상태가 업데이트될 때마다 재실행
-
           // --- Derived State ---
           
-          // 티켓팅이 실제로 가능한지 여부 (관리자 활성화 && 카운트다운 종료/없음)
-          const isTicketingLive = ticketingActive && (countdownSeconds === null || countdownSeconds <= 0);
+          // 티켓팅이 실제로 가능한지 여부 (카운트다운 제거 후: 관리자 활성화 상태만 확인)
+          const isTicketingLive = ticketingActive;
 
           // 이름으로 이미 배정된 좌석이 있는지 확인
           React.useEffect(() => {
@@ -308,7 +225,7 @@
               setHasAssignedSeat(!!existingSeat);
           }, [seats, studentName]);
 
-          // 이름 입력 필드는 배정 중이거나 완료된 경우만 비활성화 (요청 사항 유지)
+          // 이름 입력 필드는 배정 중이거나 완료된 경우만 비활성화
           const isNameInputDisabled = processing || hasAssignedSeat || dataLoading;
           
           // --- Admin Logic ---
@@ -328,20 +245,15 @@
           const startTicketing = async () => {
             if (!window.db) return showMessage('DB 연결 실패', 'error');
             try {
-                // ⭐ 수정: 1. 로컬 선점 시간 설정 (관리자 기기에서 즉시 5초를 볼 수 있도록)
-                setLocalPreemptionStart(Date.now()); 
-                setTicketingActive(true); // UI를 즉시 업데이트하여 카운트다운 시작 화면을 띄움
-                
-                // ⭐ 수정: 2. Firestore 서버 시간으로 `ticketingStartsAt`을 설정하여 클라이언트 시간 오차를 제거합니다.
+                // ⭐ 수정: ticketingActive만 true로 설정하여 즉시 시작
                 const docRef = window.doc(window.db, globalStateDocPath);
                 await window.updateDoc(docRef, { 
                     ticketingActive: true, 
-                    ticketingStartsAt: window.serverTimestamp() // 서버 시간 사용
+                    // ticketingStartsAt 필드 삭제 또는 초기화 (필요시)
                 });
-                showMessage('카운트다운 시작! 5초 후 티켓팅이 시작됩니다!', 'success');
+                showMessage('티켓팅이 즉시 시작되었습니다!', 'success');
             } catch (e) {
                 console.error("Error starting ticketing:", e);
-                setLocalPreemptionStart(null); // 실패하면 로컬 선점도 취소
                 showMessage('티켓팅 시작 실패 (콘솔 오류 확인)', 'error');
             }
           };
@@ -350,9 +262,8 @@
             if (!window.db) return showMessage('DB 연결 실패', 'error');
             try {
                 const docRef = window.doc(window.db, globalStateDocPath);
-                // 티켓팅 상태 및 카운트다운 타임스탬프 모두 초기화
-                await window.updateDoc(docRef, { ticketingActive: false, ticketingStartsAt: null });
-                setLocalPreemptionStart(null); // 로컬 선점 상태도 해제
+                // 티켓팅 상태만 초기화
+                await window.updateDoc(docRef, { ticketingActive: false });
                 showMessage('티켓팅이 정지되었습니다', 'info');
             } catch (e) {
                 console.error("Error stopping ticketing:", e);
@@ -366,9 +277,8 @@
                 if (!window.db) return showMessage('DB 연결 실패', 'error');
                 try {
                     const docRef = window.doc(window.db, globalStateDocPath);
-                    // 모든 상태를 초기화
-                    await window.setDoc(docRef, { seats: {}, ticketingActive: false, ticketingStartsAt: null });
-                    setLocalPreemptionStart(null);
+                    // 모든 상태를 초기화 (ticketingStartsAt 제거)
+                    await window.setDoc(docRef, { seats: {}, ticketingActive: false });
                     setStudentName('');
                     showMessage('초기화가 완료되었습니다', 'info');
                     setShowConfirmModal(false);
@@ -381,7 +291,7 @@
             setShowConfirmModal(true);
           };
           
-          // ⭐ 복구된 관리자 좌석 취소 함수
+          // ⭐ 관리자 좌석 취소 함수 (유지)
           const handleAdminSeatCancel = (seatNum) => {
             // 취소 확인 모달을 띄우는 함수
             setConfirmMessage(`${seats[seatNum]}님의 ${seatNum}번 좌석 배정을 취소하시겠습니까?`);
@@ -410,7 +320,7 @@
           // --- Student Seat Assignment Logic (Firestore Transaction) ---
 
           const handleSeatClick = async (seatNum) => {
-            // ⭐ 관리자 모드에서 이미 배정된 좌석 클릭 시 취소 모드로 전환
+            // ⭐ 관리자 모드에서 이미 배정된 좌석 클릭 시 취소 모드로 전환 (유지)
             if (adminMode && seats[seatNum]) {
               handleAdminSeatCancel(seatNum);
               return;
@@ -498,9 +408,6 @@
                     : 'bg-blue-600 text-white cursor-default shadow-xl'; 
             }
             
-            // 카운트다운 중일 때
-            if (countdownSeconds > 0) return 'bg-yellow-100 text-gray-500 cursor-not-allowed shadow-inner opacity-70';
-
             // 처리 중이거나 티켓팅이 활성화되지 않은 경우
             if (processing || !isTicketingLive) return 'bg-gray-200 text-gray-500 cursor-not-allowed shadow-inner';
 
@@ -533,19 +440,7 @@
           return (
             <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 font-sans antialiased">
               
-              {/* 5초 카운트다운 풀스크린 오버레이 */}
-              {ticketingActive && countdownSeconds > 0 && (
-                  <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-[100] transition-opacity duration-300">
-                      <div className="text-center">
-                          <p className="text-white text-4xl md:text-5xl font-extrabold mb-8 animate-dramatic-pulse">
-                              좌석 선택까지 남은 시간
-                          </p>
-                          <div className="text-red-500 text-[10rem] md:text-[15rem] lg:text-[20rem] font-black leading-none animate-dramatic-pulse">
-                              {countdownSeconds}
-                          </div>
-                      </div>
-                  </div>
-              )}
+              {/* 카운트다운 오버레이는 제거됨 */}
               
               <div className="max-w-7xl mx-auto">
                 
@@ -618,17 +513,12 @@
                     <div className="flex items-center gap-4">
                       {/* 아이콘: users */}
                       <div dangerouslySetInnerHTML={{ __html: renderLucideIcon('users', 'w-10 h-10 text-indigo-600') }} />
-                      <h1 className="text-4xl font-extrabold text-gray-800">실시간 좌석 배치 시스템 (DB 연동)</h1>
+                      <h1 className="text-4xl font-extrabold text-gray-800">1학년 6반 자리 티켓팅</h1>
                       
                       {/* 상태 표시 */}
                       {isTicketingLive && (
                         <span className="bg-green-500 text-white px-4 py-1.5 rounded-full text-sm font-bold animate-pulse shadow-md border-2 border-white">
-                          LIVE 티켓팅 활성화!
-                        </span>
-                      )}
-                      {ticketingActive && countdownSeconds > 0 && (
-                        <span className="bg-red-500 text-white px-4 py-1.5 rounded-full text-sm font-bold animate-pulse shadow-md border-2 border-white">
-                          카운트다운 중! ({countdownSeconds}초 남음)
+                          LIVE 좌석 선택 활성화!
                         </span>
                       )}
                     </div>
@@ -667,16 +557,15 @@
                   <div className="bg-white rounded-2xl shadow-xl p-6 mb-8 border-l-4 border-green-500">
                     <h2 className="text-xl font-bold text-gray-800 mb-4">관리자 제어판 (DB 연동)</h2>
                     <div className="flex gap-4 flex-wrap">
-                      {/* 카운트다운 중이거나 정지 상태일 때만 시작 버튼 노출 */}
-                      {(!ticketingActive || countdownSeconds > 0) ? ( 
+                      {/* 티켓팅 활성화 여부에 따라 버튼 변경 */}
+                      {!ticketingActive ? ( 
                         <button
                           onClick={startTicketing}
-                          className="flex items-center gap-2 px-6 py-3 bg-green-600 text-white rounded-xl font-bold hover:bg-green-700 transition shadow-lg shadow-green-300 transform hover:scale-105 disabled:opacity-50"
-                          disabled={ticketingActive && countdownSeconds > 0} 
+                          className="flex items-center gap-2 px-6 py-3 bg-green-600 text-white rounded-xl font-bold hover:bg-green-700 transition shadow-lg shadow-green-300 transform hover:scale-105"
                         >
                           {/* 아이콘: play */}
                           <div dangerouslySetInnerHTML={{ __html: renderLucideIcon('play', 'w-5 h-5') }} />
-                          {ticketingActive && countdownSeconds > 0 ? `카운트다운 중...` : '티켓팅 시작 (5초 후)'}
+                          좌석 선택 즉시 시작
                         </button>
                       ) : (
                         <button
@@ -685,7 +574,7 @@
                         >
                           {/* 아이콘: stop-circle */}
                           <div dangerouslySetInnerHTML={{ __html: renderLucideIcon('stop-circle', 'w-5 h-5') }} />
-                          티켓팅 정지
+                          좌석 선택 정지
                         </button>
                       )}
                       <button
@@ -712,12 +601,10 @@
                         type="text"
                         value={studentName}
                         onChange={(e) => setStudentName(e.target.value)}
-                        // placeholder는 현재 상태에 따라 좌석 선택 가능 시점을 안내합니다.
+                        // placeholder 업데이트: 카운트다운 관련 텍스트 제거
                         placeholder={isTicketingLive 
                             ? "여기에 이름을 입력하고 좌석을 선택하세요." 
-                            : (countdownSeconds > 0 
-                                ? `이름을 미리 입력하세요. ${countdownSeconds}초 후 좌석 선택 가능!` 
-                                : "이름을 미리 입력하세요. 관리자가 티켓팅을 시작해야 좌석 선택 가능!")
+                            : "이름을 미리 입력하세요."
                         }
                         disabled={isNameInputDisabled}
                         className="w-full px-5 py-3 text-xl border-2 border-indigo-400 rounded-xl focus:ring-4 focus:ring-indigo-300 focus:border-indigo-500 disabled:bg-gray-100 disabled:text-gray-500 transition"
@@ -766,11 +653,10 @@
                                   return (
                                     <button
                                       key={seatNum}
-                                      // ⭐ 좌석 클릭 핸들러: 관리자 모드 시 취소 기능을 포함하도록 handleSeatClick을 호출
+                                      // 좌석 클릭 핸들러: 관리자 모드 시 취소 기능을 포함하도록 handleSeatClick을 호출
                                       onClick={() => handleSeatClick(seatNum)}
-                                      // 버튼 비활성화 조건: 티켓팅 비활성화, 처리 중, 이미 배정됨, 카운트다운 중
-                                      // 단, adminMode일 때는 배정된 좌석이라도 클릭 가능해야 취소가 됩니다.
-                                      disabled={!isTicketingLive && !adminMode || processing || (seats[seatNum] && !adminMode) || countdownSeconds > 0} 
+                                      // 버튼 비활성화 조건: 티켓팅 비활성화, 처리 중, 이미 배정됨
+                                      disabled={!isTicketingLive && !adminMode || processing || (seats[seatNum] && !adminMode)} 
                                       className={`rounded-xl font-extrabold transition-all duration-200 transform shadow-lg text-sm flex flex-col items-center justify-center 
                                         ${getSeatColor(seatNum)}
                                         w-20 h-20 
@@ -799,28 +685,20 @@
                   <div className="mt-10 pt-6 border-t border-gray-200 flex flex-wrap justify-center gap-6 text-sm font-semibold">
                     <div className="flex items-center gap-2">
                       <div className="w-6 h-6 bg-gray-200 border border-gray-400 rounded-lg shadow-inner"></div>
-                      <span>준비/처리 중</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="w-6 h-6 bg-yellow-100 border border-yellow-300 rounded-lg shadow-md opacity-70"></div>
-                      <span className="text-yellow-700">카운트다운 중</span>
+                      <span>준비/정지 상태</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="w-6 h-6 bg-green-100 border border-green-300 rounded-lg shadow-md"></div>
-                      <span className="text-green-700">선택 가능 (LIVE)</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="w-6 h-6 bg-yellow-400 rounded-lg shadow-lg animate-pulse"></div>
-                      <span className="text-yellow-700">배정 시도 중 (3초 딜레이)</span>
+                      <span className="text-green-700">선택 가능</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="w-6 h-6 bg-blue-600 rounded-lg shadow-xl"></div>
-                      <span className="text-blue-700">배정 완료 (DB에 기록됨)</span>
+                      <span className="text-blue-700">배정 완료 </span>
                     </div>
                     {adminMode && (
                         <div className="flex items-center gap-2">
-                            <div className="w-6 h-6 bg-blue-600 rounded-lg shadow-xl hover:bg-red-500 transition-colors duration-200"></div>
-                            <span className="text-red-500 font-bold">관리자: 취소 가능</span>
+                            <div className="w-6 h-6 bg-red-600 rounded-lg shadow-xl hover:bg-red-500 transition-colors duration-200"></div>
+                            <span className="text-red-500 font-bold">이미 배정된 자리</span>
                         </div>
                     )}
                   </div>
