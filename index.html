@@ -46,7 +46,6 @@
         // V9 Firebase 모듈 CDN 로드
         import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        // 불필요한 serverTimestamp import 제거됨
         import { getFirestore, doc, setDoc, updateDoc, onSnapshot, runTransaction } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // 서비스 초기화
@@ -331,8 +330,19 @@
             
             if (seatNum === 'EMPTY') return;
 
-            // 티켓팅 가능 여부 및 상태 체크
-            if (!isTicketingLive || processing || seats[seatNum]) return;
+            // --- 학생용 좌석 선택 차단 및 피드백 로직 (수정된 부분) ---
+            // 1. 티켓팅 비활성화 상태에서는 학생은 선택 불가 (메시지 피드백)
+            if (!isTicketingLive && !adminMode) {
+                showMessage('⚠️ 티켓팅이 아직 시작되지 않았습니다.', 'info');
+                return;
+            }
+
+            // 2. 이미 배정된 좌석은 학생 선택 불가 (UI로 확인 가능하므로 메시지 불필요)
+            if (seats[seatNum] && !adminMode) return;
+
+            // 3. 처리 중인 상태에서는 클릭 무시 (무한 클릭 방지)
+            if (processing) return;
+            // --- 차단 및 피드백 로직 끝 ---
             
             const name = studentName.trim();
             if (!name) {
@@ -594,7 +604,7 @@
                 {/* 이름 입력 */}
                 <div className="bg-white rounded-2xl shadow-xl p-6 mb-8">
                     <label className="block text-xl font-bold text-gray-800 mb-4">
-                        🙋 티켓팅 시작 후 좌석 선택
+                        🙋 이름을 정확히 입력하세요! (예: 홍길동)
                     </label>
                     <input
                         type="text"
