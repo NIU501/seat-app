@@ -565,7 +565,7 @@
                         >
                           {/* 아이콘: play */}
                           <div dangerouslySetInnerHTML={{ __html: renderLucideIcon('play', 'w-5 h-5') }} />
-                          좌석 선택 즉시 시작
+                          티켓팅 시작
                         </button>
                       ) : (
                         <button
@@ -574,7 +574,7 @@
                         >
                           {/* 아이콘: stop-circle */}
                           <div dangerouslySetInnerHTML={{ __html: renderLucideIcon('stop-circle', 'w-5 h-5') }} />
-                          좌석 선택 정지
+                          티켓팅 정지
                         </button>
                       )}
                       <button
@@ -595,7 +595,7 @@
                 {/* 이름 입력 */}
                 <div className="bg-white rounded-2xl shadow-xl p-6 mb-8">
                     <label className="block text-xl font-bold text-gray-800 mb-4">
-                        🙋 이름 입력 후 좌석 선택
+                        🙋 티켓팅 시작하면 좌석 선택
                     </label>
                     <input
                         type="text"
@@ -694,10 +694,6 @@
                     <div className="flex items-center gap-2">
                       <div className="w-6 h-6 bg-blue-600 rounded-lg shadow-xl"></div>
                       <span className="text-blue-700">배정 완료 </span>
-                    </div>
-                        <div className="flex items-center gap-2">
-                            <div className="w-6 h-6 bg-red-600 rounded-lg shadow-xl hover:bg-red-500 transition-colors duration-200"></div>
-                            <span className="text-red-500 font-bold">이미 배정된 자리</span>
                         </div>
                   </div>
                 </div>
@@ -714,5 +710,6 @@
     </script>
 </body>
 </html>
+
 
 
