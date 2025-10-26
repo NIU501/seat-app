@@ -94,6 +94,7 @@
           // 학생 UI 상태
           const [studentName, setStudentName] = React.useState('');
           const [hasAssignedSeat, setHasAssignedSeat] = React.useState(false);
+          const [myAssignedSeat, setMyAssignedSeat] = React.useState(null); // ⭐ 추가: 내가 배정한 좌석 번호
           const [processing, setProcessing] = React.useState(false);
           const [selectedSeat, setSelectedSeat] = React.useState(null);
 
@@ -219,10 +220,17 @@
           // 티켓팅이 실제로 가능한지 여부 (관리자 활성화 상태만 확인)
           const isTicketingLive = ticketingActive;
 
-          // 이름으로 이미 배정된 좌석이 있는지 확인
+          // 이름으로 이미 배정된 좌석이 있는지 확인 (⭐⭐ 2, 4번 요구사항 처리를 위한 로직)
           React.useEffect(() => {
-              const existingSeat = Object.keys(seats).find(key => seats[key] === studentName.trim());
+              const name = studentName.trim();
+              if (!name) {
+                  setHasAssignedSeat(false);
+                  setMyAssignedSeat(null);
+                  return;
+              }
+              const existingSeat = Object.keys(seats).find(key => seats[key] === name);
               setHasAssignedSeat(!!existingSeat);
+              setMyAssignedSeat(existingSeat ? parseInt(existingSeat, 10) : null); // 좌석 번호 저장
           }, [seats, studentName]);
 
           // 이름 입력 필드는 배정 중이거나 완료된 경우, 또는 로딩 중일 때 비활성화
@@ -296,26 +304,77 @@
                 if (!window.db) return showMessage('DB 연결 실패', 'error');
                 try {
                     const newSeats = { ...seats };
+                    // 취소 전에 학생 이름을 저장해 둡니다.
+                    const cancelledStudentName = seats[seatNum];
                     delete newSeats[seatNum];
                     
                     const docRef = window.doc(window.db, globalStateDocPath);
                     await window.updateDoc(docRef, { seats: newSeats }); 
                     
                     // 만약 취소된 학생이 본인이라면 이름 입력창 활성화
-                    if (studentName.trim() === seats[seatNum]) {
-                         setHasAssignedSeat(false);
+                    if (studentName.trim() === cancelledStudentName) {
                          setStudentName('');
                     }
 
-                    showMessage('좌석 배정이 취소되었습니다', 'info');
-                    setShowConfirmModal(false); 
+                    showMessage(`[관리자 취소] ${cancelledStudentName}님의 좌석 배정이 취소되었습니다`, 'info');
+                    setShowConfirmModal(false);
                 } catch (e) {
                     console.error("Error cancelling seat:", e);
                     showMessage('취소 실패 (콘솔 오류 확인)', 'error');
-                    setShowConfirmModal(false); 
+                    setShowConfirmModal(false);
                 }
             });
             setShowConfirmModal(true); 
+          };
+
+
+          // ⭐ 학생 자기 취소 로직 (6번 요구사항: 트랜잭션으로 소유자 확인 및 취소)
+          const handleStudentSeatCancel = async (seatNum) => {
+              const name = studentName.trim();
+              if (!name) return; // 이름이 없으면 취소 불가
+              
+              setProcessing(true);
+              setShowConfirmModal(false); // 확인 모달 닫기
+          
+              try {
+                  const docRef = window.doc(window.db, globalStateDocPath);
+          
+                  // Firestore 트랜잭션을 사용하여 동시성 제어 및 소유자 확인
+                  await window.runTransaction(window.db, async (transaction) => {
+                      const docSnapshot = await transaction.get(docRef); 
+                      if (!docSnapshot.exists()) {
+                          throw new Error("데이터베이스 문서가 초기화되지 않았습니다.");
+                      }
+                      
+                      const currentSeats = docSnapshot.data().seats || {};
+                      
+                      // 1. 좌석 소유자 확인 (가장 중요)
+                      if (currentSeats[seatNum] !== name) {
+                          // 다른 학생이 취소를 시도하거나 데이터가 변경된 경우
+                          throw new Error("ERR_OWNER_MISMATCH"); 
+                      }
+                      
+                      // 2. 취소 처리
+                      const newSeats = { ...currentSeats };
+                      delete newSeats[seatNum];
+                      
+                      transaction.update(docRef, { seats: newSeats }); 
+                  });
+          
+                  // 5번 요구사항: 취소 완료 메시지
+                  showMessage(`${name}님, ${seatNum}번 좌석 배정이 성공적으로 취소되었습니다. 이제 다른 자리를 선택할 수 있습니다!`, 'success');
+                  // setHasAssignedSeat와 setMyAssignedSeat는 onSnapshot 리스너에 의해 자동으로 업데이트됩니다.
+                  
+              } catch (e) {
+                  if (e.message === "ERR_OWNER_MISMATCH") {
+                       showMessage(`트랜잭션 실패: ${seatNum}번 좌석의 소유자가 아닙니다. (다른 학생의 자리를 취소할 수 없습니다.)`, 'error');
+                  } else {
+                      console.error("Seat cancellation transaction failed:", e);
+                      showMessage('좌석 취소 실패. 잠시 후 다시 시도해주세요.', 'error');
+                  }
+              } finally {
+                  setProcessing(false);
+              }
           };
 
 
@@ -330,31 +389,46 @@
             
             if (seatNum === 'EMPTY') return;
 
-            // --- 학생용 좌석 선택 차단 및 피드백 로직 (수정된 부분) ---
-            // 1. 티켓팅 비활성화 상태에서는 학생은 선택 불가 (메시지 피드백)
-            if (!isTicketingLive && !adminMode) {
-                showMessage('⚠️ 티켓팅이 아직 시작되지 않았습니다.', 'info');
-                return;
-            }
-
-            // 2. 이미 배정된 좌석은 학생 선택 불가 (UI로 확인 가능하므로 메시지 불필요)
-            if (seats[seatNum] && !adminMode) return;
-
-            // 3. 처리 중인 상태에서는 클릭 무시 (무한 클릭 방지)
-            if (processing) return;
-            // --- 차단 및 피드백 로직 끝 ---
-            
             const name = studentName.trim();
             if (!name) {
               showMessage('이름을 먼저 입력해주세요!', 'error');
               return;
             }
-
-            if (hasAssignedSeat) {
-                showMessage('이미 좌석 배정에 성공했습니다. 추가 배정은 관리자에게 문의하세요.', 'error');
+            
+            // ⭐ 1. 본인이 이미 선택한 자리를 클릭했을 경우 (취소 로직)
+            if (seats[seatNum] === name) {
+                // 1번 요구사항: 본인만 취소 가능 + 확인 물음
+                setConfirmMessage(`${seatNum}번 좌석을 정말로 취소하시겠습니까? 취소하시면 다시 다른 자리를 선택할 수 있습니다.`);
+                setConfirmAction(() => () => handleStudentSeatCancel(seatNum));
+                setShowConfirmModal(true);
                 return;
             }
             
+            // --- 배정 차단 및 피드백 로직 ---
+            
+            // 2. 다른 학생이 배정한 자리 클릭 시 차단
+            if (seats[seatNum] && seats[seatNum] !== name) {
+                showMessage('이미 다른 학생에게 배정된 좌석입니다.', 'error');
+                return;
+            }
+
+            // 2. 추가 배정 금지 (이미 자리가 있는 상태에서 다른 자리를 선택 시도 시)
+            if (hasAssignedSeat) {
+                showMessage(`이미 ${myAssignedSeat}번 좌석 배정에 성공했습니다. 추가 배정은 관리자에게 문의하거나 기존 자리를 취소해야 합니다.`, 'error');
+                return;
+            }
+
+            // 4. 티켓팅 비활성화 상태에서는 학생은 선택 불가 (메시지 피드백)
+            if (!isTicketingLive && !adminMode) {
+                showMessage('⚠️ 티켓팅이 아직 시작되지 않았습니다.', 'info');
+                return;
+            }
+            
+            // 5. 처리 중인 상태에서는 클릭 무시 (무한 클릭 방지)
+            if (processing) return;
+            
+            // --- 배정 로직 시작 ---
+
             setProcessing(true);
             setSelectedSeat(seatNum);
 
@@ -384,7 +458,7 @@
                         throw new Error(`이미 ${currentSeats[seatNum]}에게 배정된 좌석입니다.`);
                     }
 
-                    // 2. 학생 중복 배정 확인
+                    // 2. 학생 중복 배정 확인 (2번 요구사항 재확인)
                     const existingSeatNum = Object.keys(currentSeats).find(key => currentSeats[key] === name);
                     if (existingSeatNum) {
                         throw new Error(`${name}님은 이미 ${existingSeatNum}번 좌석을 배정받았습니다.`);
@@ -399,6 +473,7 @@
                 
             } catch (e) {
                 if (e.message.includes("이미")) {
+                     // 3. 좌석 배정에 실패해도 이름 유지 (name 상태를 건드리지 않음)
                      showMessage(e.message, 'error');
                 } else {
                     console.error("Seat assignment transaction failed:", e);
@@ -413,15 +488,28 @@
           // --- UI Styling Helpers ---
 
           const getSeatColor = (seatNum) => {
+            // 현재 학생이 배정된 좌석인지 확인
+            const isMySeat = seats[seatNum] === studentName.trim() && !adminMode;
+            
+            // 이미 배정된 좌석
             if (seats[seatNum]) {
-                // 배정된 좌석 (관리자 모드 시 취소 가능하도록 빨간색 호버 효과 추가)
-                return adminMode 
-                    ? 'bg-blue-600 text-white hover:bg-red-500 cursor-pointer shadow-xl' 
-                    : 'bg-blue-600 text-white cursor-default shadow-xl'; 
+                if (adminMode) {
+                     // 관리자 모드: 다른 사람 자리도 취소 가능하도록 빨간색 호버 효과
+                    return 'bg-blue-600 text-white hover:bg-red-500 cursor-pointer shadow-xl'; 
+                } else if (isMySeat) {
+                    // 본인 자리: 취소 가능하도록 강조 스타일 (hover 시 취소 효과)
+                    return 'bg-indigo-600 text-white hover:bg-red-500 cursor-pointer shadow-xl ring-4 ring-indigo-300 ring-offset-2';
+                } else {
+                    // 다른 사람 자리: 선택 불가
+                    return 'bg-blue-600 text-white cursor-default shadow-xl';
+                }
             }
             
             // 처리 중이거나 티켓팅이 활성화되지 않은 경우
             if (processing || !isTicketingLive) return 'bg-gray-200 text-gray-500 cursor-not-allowed shadow-inner';
+
+            // 이미 배정된 좌석이 있으면 다른 좌석 선택 불가 (2번 요구사항)
+            if (hasAssignedSeat) return 'bg-gray-200 text-gray-500 cursor-not-allowed shadow-inner';
 
             // 선택 가능한 좌석
             const baseColor = 'bg-green-100 hover:bg-green-300 text-gray-700';
@@ -619,12 +707,12 @@
                     />
                     {hasAssignedSeat && (
                         <p className="mt-4 text-green-600 font-bold text-lg">
-                            ✅ 좌석 배정 성공! ({Object.keys(seats).find(key => seats[key] === studentName.trim())}번) 이름 입력란은 비활성화되었습니다.
+                            ✅ 좌석 배정 성공! ({myAssignedSeat}번) 이름 입력란은 비활성화되었습니다.
                         </p>
                     )}
                     {processing && (
                         <p className="mt-4 text-indigo-600 font-bold text-lg animate-bounce">
-                            <span className="animate-spin inline-block mr-2">⚙️</span> 좌석 배정 중... 잠시만 기다려주세요! (DB 트랜잭션 진행 중)
+                            <span className="animate-spin inline-block mr-2">⚙️</span> 좌석 배정/취소 처리 중... 잠시만 기다려주세요! (DB 트랜잭션 진행 중)
                         </p>
                     )}
                 </div>
@@ -658,23 +746,29 @@
                                   }
 
                                   const seatNum = seatItem;
+                                  // 현재 학생이 배정된 좌석인지 확인
+                                  const isMySeat = seats[seatNum] === studentName.trim() && !adminMode;
+                                  // 배정/취소 버튼 비활성화 조건
+                                  const isDisabled = (!isTicketingLive && !adminMode) || processing || (seats[seatNum] && !isMySeat && !adminMode);
+                                  
                                   return (
                                     <button
                                       key={seatNum}
-                                      // 좌석 클릭 핸들러: 관리자 모드 시 취소 기능을 포함하도록 handleSeatClick을 호출
                                       onClick={() => handleSeatClick(seatNum)}
-                                      // 버튼 비활성화 조건: 티켓팅 비활성화, 처리 중, 이미 배정됨 (관리자 모드 제외)
-                                      disabled={(!isTicketingLive && !adminMode) || processing || (seats[seatNum] && !adminMode)} 
+                                      disabled={isDisabled} 
                                       className={`rounded-xl font-extrabold transition-all duration-200 transform shadow-lg text-sm flex flex-col items-center justify-center 
                                         ${getSeatColor(seatNum)}
                                         w-20 h-20 
-                                        ${seats[seatNum] ? (adminMode ? 'hover:scale-105' : 'hover:scale-100') : 'hover:scale-105'}
+                                        ${isDisabled ? 'hover:scale-100' : 'hover:scale-105'}
                                       `}
                                     >
                                       <div className={`text-xs opacity-70 mb-1`}>{seatNum}번</div>
                                       <div className={`text-sm mt-1 px-1 truncate w-full ${seats[seatNum] ? 'text-white font-bold' : 'font-semibold'}`}>
-                                        {seats[seatNum] || ''}
+                                        {seats[seatNum] || (isMySeat ? '내 자리' : '')}
                                       </div>
+                                      {isMySeat && (
+                                        <div className="text-xs text-red-100 font-bold mt-1">(취소 가능)</div>
+                                      )}
                                     </button>
                                   );
                                 })}
@@ -694,7 +788,7 @@
                   <div className="mt-10 pt-6 border-t border-gray-200 flex flex-wrap justify-center gap-6 text-sm font-semibold">
                     <div className="flex items-center gap-2">
                       <div className="w-6 h-6 bg-gray-200 border border-gray-400 rounded-lg shadow-inner"></div>
-                      <span>준비</span>
+                      <span>준비/선택 불가</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="w-6 h-6 bg-green-100 border border-green-300 rounded-lg shadow-md"></div>
@@ -702,8 +796,12 @@
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="w-6 h-6 bg-blue-600 rounded-lg shadow-xl"></div>
-                      <span className="text-blue-700">배정 완료</span>
+                      <span className="text-blue-700">타인 배정 완료</span>
                         </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-6 h-6 bg-indigo-600 ring-4 ring-indigo-300 ring-offset-2 rounded-lg shadow-xl"></div>
+                      <span className="text-indigo-700">내 자리 (취소 가능)</span>
+                    </div>
                   </div>
                 </div>
               </div>
