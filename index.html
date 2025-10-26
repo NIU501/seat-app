@@ -55,10 +55,11 @@
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : MANUAL_FIREBASE_CONFIG;
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-        // V9 Firebase 모듈 CDN 로드
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        // V9 Firebase 모듈 CDN 로드 (serverTimestamp 추가)
         import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, updateDoc, onSnapshot, runTransaction } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        // ⭐ 수정: serverTimestamp 함수를 import하고 전역에 노출합니다.
+        import { getFirestore, doc, setDoc, updateDoc, onSnapshot, runTransaction, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // 서비스 초기화
         const app = initializeApp(firebaseConfig);
@@ -82,6 +83,8 @@
         window.runTransaction = runTransaction;
         window.signInAnonymously = signInAnonymously;
         window.signInWithCustomToken = signInWithCustomToken;
+        // ⭐ 수정: serverTimestamp를 전역에 노출합니다.
+        window.serverTimestamp = serverTimestamp;
         
     </script>
 
@@ -101,6 +104,7 @@
           
           // DB 상태: seats (배정 정보), ticketingActive (관리자 ON/OFF), ticketingStartsAt (카운트다운 시점)
           const [ticketingActive, setTicketingActive] = React.useState(false); 
+          // ⭐ 수정: ticketingStartsAt이 Firestore Timestamp 객체가 될 수 있습니다.
           const [ticketingStartsAt, setTicketingStartsAt] = React.useState(null); 
           const [seats, setSeats] = React.useState({}); 
           const [dataLoading, setDataLoading] = React.useState(true);
@@ -211,6 +215,7 @@
                   const data = docSnapshot.data();
                   setSeats(data.seats || {});
                   setTicketingActive(!!data.ticketingActive);
+                  // ⭐ 수정: Firestore Timestamp 객체를 그대로 저장합니다.
                   setTicketingStartsAt(data.ticketingStartsAt || null); 
                 } else {
                   // 문서가 없으면 초기 상태로 생성
@@ -232,12 +237,18 @@
               let intervalId = null;
               
               const checkCountdown = () => {
-                  if (ticketingStartsAt) {
+                  // ⭐ 수정: ticketingStartsAt이 null이 아니며, Timestamp 객체의 toMillis() 메서드가 있는지 확인합니다.
+                  if (ticketingStartsAt && typeof ticketingStartsAt.toMillis === 'function') {
                       const now = Date.now();
-                      const remaining = ticketingStartsAt - now;
+                      
+                      // ⭐ 수정: 서버 시간(ticketingStartsAt)을 기준으로 5초(COUNTDOWN_DURATION_MS)를 더해 목표 시간을 계산합니다.
+                      const serverStartTimeMs = ticketingStartsAt.toMillis();
+                      const targetTime = serverStartTimeMs + window.COUNTDOWN_DURATION_MS; 
+                      
+                      const remaining = targetTime - now;
                       
                       if (remaining > 0) {
-                          // 남은 시간(초) 계산 및 설정 (올림 처리하여 5, 4, 3... 확실히 보이도록)
+                          // 남은 시간(초) 계산 및 설정
                           setCountdownSeconds(Math.ceil(remaining / 1000));
                           
                       } else {
@@ -246,7 +257,7 @@
                           if (intervalId) clearInterval(intervalId);
                       }
                   } else {
-                      // 티켓팅 시작 시점이 설정되지 않았으면 타이머 해제
+                      // 티켓팅 시작 시점이 설정되지 않았거나, Timestamp 객체가 로드되지 않았으면 타이머 해제
                       setCountdownSeconds(null);
                       if (intervalId) clearInterval(intervalId);
                   }
@@ -259,7 +270,7 @@
               return () => {
                   if (intervalId) clearInterval(intervalId);
               };
-          }, [ticketingStartsAt]);
+          }, [ticketingStartsAt]); // ticketingStartsAt이 업데이트될 때마다 재실행
 
           // --- Derived State ---
           
@@ -272,7 +283,7 @@
               setHasAssignedSeat(!!existingSeat);
           }, [seats, studentName]);
 
-          // ⭐ 요청 사항 반영: 이름 입력 필드는 배정 중이거나 완료된 경우만 비활성화
+          // 이름 입력 필드는 배정 중이거나 완료된 경우만 비활성화 (요청 사항 유지)
           const isNameInputDisabled = processing || hasAssignedSeat || dataLoading;
           
           // --- Admin Logic ---
@@ -292,13 +303,11 @@
           const startTicketing = async () => {
             if (!window.db) return showMessage('DB 연결 실패', 'error');
             try {
-                // 현재 시간으로부터 5초 후 시작하도록 타임스탬프 설정
-                const startTime = Date.now() + window.COUNTDOWN_DURATION_MS;
-                
+                // ⭐ 수정: Firestore 서버 시간으로 `ticketingStartsAt`을 설정하여 클라이언트 시간 오차를 제거합니다.
                 const docRef = window.doc(window.db, globalStateDocPath);
                 await window.updateDoc(docRef, { 
                     ticketingActive: true, 
-                    ticketingStartsAt: startTime 
+                    ticketingStartsAt: window.serverTimestamp() // 서버 시간 사용
                 });
                 showMessage('카운트다운 시작! 5초 후 티켓팅이 시작됩니다!', 'success');
             } catch (e) {
@@ -468,11 +477,8 @@
             return 'bg-indigo-600';
           };
           
-          // ⭐ 수정된 부분: 이름 입력은 처리 중이거나 배정 완료 상태에서만 비활성화
-          // isNameInputDisabled는 이제 name input의 disabled 상태만 제어합니다.
-          // 좌석 클릭 가능 여부는 isTicketingLive와 hasAssignedSeat가 제어합니다.
-          // const isNameInputDisabled = processing || hasAssignedSeat || dataLoading || countdownSeconds > 0 || !ticketingActive; // 기존
-          // const isNameInputDisabled = processing || hasAssignedSeat || dataLoading; // 수정
+          // 이름 입력 필드의 비활성화 상태는 그대로 유지합니다.
+          // const isNameInputDisabled = processing || hasAssignedSeat || dataLoading;
           
           // 로딩 상태 표시
           if (dataLoading) {
@@ -577,7 +583,7 @@
                     <div className="flex items-center gap-4">
                       {/* 아이콘: users */}
                       <div dangerouslySetInnerHTML={{ __html: renderLucideIcon('users', 'w-10 h-10 text-indigo-600') }} />
-                      <h1 className="text-4xl font-extrabold text-gray-800">실시간 좌석 배치 시스템 (DB 연동)</h1>
+                      <h1 className="text-4xl font-extrabold text-gray-800">1학년 6반 자리 티켓팅</h1>
                       
                       {/* 상태 표시 */}
                       {isTicketingLive && (
@@ -671,12 +677,12 @@
                         type="text"
                         value={studentName}
                         onChange={(e) => setStudentName(e.target.value)}
-                        // ⭐ 수정된 placeholder: 현재 상태에 따라 좌석 선택 가능 시점을 안내
+                        // placeholder는 현재 상태에 따라 좌석 선택 가능 시점을 안내합니다.
                         placeholder={isTicketingLive 
                             ? "여기에 이름을 입력하고 좌석을 선택하세요." 
                             : (countdownSeconds > 0 
                                 ? `이름을 미리 입력하세요. ${countdownSeconds}초 후 좌석 선택 가능!` 
-                                : "이름을 미리 입력하세요. 관리자가 티켓팅을 시작해야 좌석 선택 가능!")
+                                : "이름을 미리 입력하세요.")
                         }
                         disabled={isNameInputDisabled}
                         className="w-full px-5 py-3 text-xl border-2 border-indigo-400 rounded-xl focus:ring-4 focus:ring-indigo-300 focus:border-indigo-500 disabled:bg-gray-100 disabled:text-gray-500 transition"
@@ -759,20 +765,16 @@
                       <span>준비/처리 중</span>
                     </div>
                     <div className="flex items-center gap-2">
-                      <div className="w-6 h-6 bg-yellow-100 border border-yellow-300 rounded-lg shadow-md opacity-70"></div>
-                      <span className="text-yellow-700">카운트다운 중</span>
-                    </div>
-                    <div className="flex items-center gap-2">
                       <div className="w-6 h-6 bg-green-100 border border-green-300 rounded-lg shadow-md"></div>
                       <span className="text-green-700">선택 가능 (LIVE)</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="w-6 h-6 bg-yellow-400 rounded-lg shadow-lg animate-pulse"></div>
-                      <span className="text-yellow-700">배정 시도 중 (3초 딜레이)</span>
+                      <span className="text-yellow-700">배정 시도 중</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="w-6 h-6 bg-blue-600 rounded-lg shadow-xl"></div>
-                      <span className="text-blue-700">배정 완료 (DB에 기록됨)</span>
+                      <span className="text-blue-700">배정 완료</span>
                     </div>
                   </div>
                 </div>
