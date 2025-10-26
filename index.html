@@ -83,16 +83,18 @@
         function App() {
           // 관리자 및 인증 상태
           const [adminMode, setAdminMode] = React.useState(false);
-          const [password, setPassword] = React.useState('');
+          const [adminPassword, setAdminPassword] = React.useState(''); // 관리자 비밀번호 입력 필드
           const [showPasswordModal, setShowPasswordModal] = React.useState(false);
           
           // DB 상태: seats (배정 정보), ticketingActive (관리자 ON/OFF)
+          // seats 객체는 이제 { [seatNum]: { name: string, password: string } } 형태를 가집니다.
           const [ticketingActive, setTicketingActive] = React.useState(false); 
           const [seats, setSeats] = React.useState({}); 
           const [dataLoading, setDataLoading] = React.useState(true);
           
           // 학생 UI 상태
           const [studentName, setStudentName] = React.useState('');
+          const [studentPassword, setStudentPassword] = React.useState(''); // 학생 비밀번호
           const [hasAssignedSeat, setHasAssignedSeat] = React.useState(false);
           const [processing, setProcessing] = React.useState(false);
           const [selectedSeat, setSelectedSeat] = React.useState(null);
@@ -103,6 +105,8 @@
           const [showConfirmModal, setShowConfirmModal] = React.useState(false);
           const [confirmAction, setConfirmAction] = React.useState(null); 
           const [confirmMessage, setConfirmMessage] = React.useState('');
+          const [showStudentCancelModal, setShowStudentCancelModal] = React.useState(false); // 학생 취소 모달
+          const [cancelSeatNum, setCancelSeatNum] = React.useState(null); // 취소할 좌석 번호
           
           // 교실 좌석 구조 정의
           const seatStructure = [
@@ -120,9 +124,8 @@
 
           // --- Utility Functions ---
 
-          // Lucide 아이콘을 SVG 문자열로 렌더링하는 함수
+          // Lucide 아이콘을 SVG 문자열로 렌더링하는 함수 (이전 코드 유지)
           const renderLucideIcon = (name, className) => {
-            // Lucide CDN이 로드되지 않았거나 아이콘 함수를 찾을 수 없는 경우 예외 처리
             if (typeof lucide === 'undefined' || !lucide.icons || typeof lucide.icons[name] !== 'function') {
                 return `<!-- Icon ${name} failed to load -->`;
             }
@@ -216,13 +219,12 @@
           
           // --- Derived State ---
           
-          // 티켓팅이 실제로 가능한지 여부 (관리자 활성화 상태만 확인)
           const isTicketingLive = ticketingActive;
 
-          // 이름으로 이미 배정된 좌석이 있는지 확인
+          // 이름으로 이미 배정된 좌석이 있는지 확인 (seats 구조 변경 반영)
           React.useEffect(() => {
-              const existingSeat = Object.keys(seats).find(key => seats[key] === studentName.trim());
-              setHasAssignedSeat(!!existingSeat);
+              const existingSeatNum = Object.keys(seats).find(key => seats[key].name === studentName.trim());
+              setHasAssignedSeat(!!existingSeatNum);
           }, [seats, studentName]);
 
           // 이름 입력 필드는 배정 중이거나 완료된 경우, 또는 로딩 중일 때 비활성화
@@ -231,18 +233,18 @@
           // --- Admin Logic ---
 
           const handlePasswordSubmit = () => {
-            if (password === window.ADMIN_PASSWORD) {
+            if (adminPassword === window.ADMIN_PASSWORD) {
               setAdminMode(true);
               setShowPasswordModal(false);
-              setPassword('');
+              setAdminPassword('');
               showMessage('관리자 모드가 활성화되었습니다', 'success');
             } else {
               showMessage('비밀번호가 올바르지 않습니다', 'error');
-              setPassword('');
+              setAdminPassword('');
             }
           };
 
-          // 티켓팅 시작: ticketingActive를 true로 설정
+          // 티켓팅 시작
           const startTicketing = async () => {
             if (!window.db) return showMessage('DB 연결 실패', 'error');
             try {
@@ -255,7 +257,7 @@
             }
           };
 
-          // 티켓팅 정지: ticketingActive를 false로 설정
+          // 티켓팅 정지
           const stopTicketing = async () => {
             if (!window.db) return showMessage('DB 연결 실패', 'error');
             try {
@@ -278,6 +280,7 @@
                     // 모든 상태 초기화
                     await window.setDoc(docRef, { seats: {}, ticketingActive: false });
                     setStudentName('');
+                    setStudentPassword(''); // 비밀번호도 초기화
                     showMessage('초기화가 완료되었습니다', 'info');
                     setShowConfirmModal(false);
                 } catch (e) {
@@ -289,9 +292,12 @@
             setShowConfirmModal(true);
           };
           
-          // 관리자 좌석 취소 함수
+          // 관리자 좌석 취소 함수 (비밀번호 검사 없이 즉시 취소)
           const handleAdminSeatCancel = (seatNum) => {
-            setConfirmMessage(`${seats[seatNum]}님의 ${seatNum}번 좌석 배정을 취소하시겠습니까?`);
+            const seatData = seats[seatNum];
+            if (!seatData) return; // 이미 취소된 경우 방지
+
+            setConfirmMessage(`${seatData.name}님의 ${seatNum}번 좌석 배정을 관리자 권한으로 취소하시겠습니까?`);
             setConfirmAction(() => async () => {
                 if (!window.db) return showMessage('DB 연결 실패', 'error');
                 try {
@@ -302,58 +308,132 @@
                     await window.updateDoc(docRef, { seats: newSeats }); 
                     
                     // 만약 취소된 학생이 본인이라면 이름 입력창 활성화
-                    if (studentName.trim() === seats[seatNum]) {
+                    if (studentName.trim() === seatData.name) {
                          setHasAssignedSeat(false);
                          setStudentName('');
+                         setStudentPassword('');
                     }
 
-                    showMessage('좌석 배정이 취소되었습니다', 'info');
+                    showMessage('관리자 권한으로 좌석 배정이 취소되었습니다', 'info');
                     setShowConfirmModal(false); 
                 } catch (e) {
-                    console.error("Error cancelling seat:", e);
+                    console.error("Error cancelling seat (Admin):", e);
                     showMessage('취소 실패 (콘솔 오류 확인)', 'error');
                     setShowConfirmModal(false); 
                 }
             });
             setShowConfirmModal(true); 
           };
+          
+          // 학생 좌석 취소 함수 (비밀번호 검사)
+          const handleStudentSeatCancel = async (passwordInput) => {
+              if (!window.db || !cancelSeatNum) {
+                  return showMessage('DB 연결 상태 불량 또는 좌석 정보 누락', 'error');
+              }
+              
+              const seatData = seats[cancelSeatNum];
+              if (!seatData) {
+                  setShowStudentCancelModal(false);
+                  return showMessage('이미 취소된 좌석이거나 잘못된 접근입니다.', 'error');
+              }
+
+              if (passwordInput !== seatData.password) {
+                  // 5. 취소 시 비밀번호가 틀린 경우
+                  return showMessage('비밀번호가 올바르지 않아 취소가 불가능합니다.', 'error');
+              }
+
+              // 비밀번호 일치 시 취소 로직
+              try {
+                  const docRef = window.doc(window.db, globalStateDocPath);
+                  await window.runTransaction(window.db, async (transaction) => {
+                      const docSnapshot = await transaction.get(docRef);
+                      if (!docSnapshot.exists()) {
+                          throw new Error("데이터베이스 문서가 초기화되지 않았습니다.");
+                      }
+                      
+                      const currentData = docSnapshot.data();
+                      const currentSeats = currentData.seats || {};
+                      
+                      // 마지막으로 이중 확인
+                      if (currentSeats[cancelSeatNum]?.name !== seatData.name) {
+                          throw new Error("취소하려는 좌석 정보가 이미 변경되었습니다.");
+                      }
+                      
+                      const newSeats = { ...currentSeats };
+                      delete newSeats[cancelSeatNum];
+                      
+                      transaction.update(docRef, { seats: newSeats });
+                  });
+
+                  // UI 상태 업데이트
+                  if (studentName.trim() === seatData.name) {
+                      setHasAssignedSeat(false);
+                      // 비밀번호 입력란은 취소 후에도 유지됨 (3번 조건 충족)
+                  }
+                  
+                  showMessage(`${seatData.name}님의 ${cancelSeatNum}번 좌석이 성공적으로 취소되었습니다.`, 'success');
+                  setShowStudentCancelModal(false);
+                  setCancelSeatNum(null);
+                  
+              } catch (e) {
+                  console.error("Seat cancellation transaction failed:", e);
+                  showMessage('좌석 취소 실패. 잠시 후 다시 시도해주세요.', 'error');
+                  setShowStudentCancelModal(false);
+              }
+          };
 
 
           // --- Student Seat Assignment Logic (Firestore Transaction) ---
 
           const handleSeatClick = async (seatNum) => {
-            // 관리자 모드에서 이미 배정된 좌석 클릭 시 취소 모드로 전환
+            // 'EMPTY' 좌석 클릭 방지
+            if (seatNum === 'EMPTY') return;
+            
+            const name = studentName.trim();
+            const password = studentPassword; // 비밀번호는 공백 허용하지 않음
+
+            // 관리자 모드: 비밀번호 없이 즉시 취소 모드로 전환 (6번 조건)
             if (adminMode && seats[seatNum]) {
               handleAdminSeatCancel(seatNum);
               return;
             }
             
-            if (seatNum === 'EMPTY') return;
-
-            // --- 학생용 좌석 선택 차단 및 피드백 로직 (수정된 부분) ---
-            // 1. 티켓팅 비활성화 상태에서는 학생은 선택 불가 (메시지 피드백)
+            // --- 학생용 좌석 선택 차단 및 피드백 로직 ---
             if (!isTicketingLive && !adminMode) {
                 showMessage('⚠️ 티켓팅이 아직 시작되지 않았습니다.', 'info');
                 return;
             }
 
-            // 2. 이미 배정된 좌석은 학생 선택 불가 (UI로 확인 가능하므로 메시지 불필요)
-            if (seats[seatNum] && !adminMode) return;
-
-            // 3. 처리 중인 상태에서는 클릭 무시 (무한 클릭 방지)
-            if (processing) return;
-            // --- 차단 및 피드백 로직 끝 ---
-            
-            const name = studentName.trim();
             if (!name) {
               showMessage('이름을 먼저 입력해주세요!', 'error');
               return;
             }
 
-            if (hasAssignedSeat) {
-                showMessage('이미 좌석 배정에 성공했습니다. 추가 배정은 관리자에게 문의하세요.', 'error');
+            if (!password) {
+              showMessage('자리 배정 비밀번호를 입력해주세요!', 'error');
+              return;
+            }
+
+            // 본인이 이미 배정된 좌석을 클릭한 경우 -> 취소 모달 표시 (2번, 4번 조건의 시작)
+            const currentSeatNum = Object.keys(seats).find(key => seats[key].name === name);
+            if (currentSeatNum && parseInt(currentSeatNum) === seatNum) {
+                setCancelSeatNum(seatNum);
+                setShowStudentCancelModal(true);
                 return;
             }
+
+            if (hasAssignedSeat && !adminMode) {
+                showMessage('이미 좌석 배정에 성공했습니다. 취소하려면 본인 좌석을 다시 클릭하세요.', 'error');
+                return;
+            }
+            
+            // 이미 다른 학생에게 배정된 좌석을 클릭한 경우
+            if (seats[seatNum] && !adminMode) return;
+            
+            // 처리 중인 상태에서는 클릭 무시
+            if (processing) return;
+
+            // --- 배정 진행 ---
             
             setProcessing(true);
             setSelectedSeat(seatNum);
@@ -381,23 +461,25 @@
 
                     // 1. 해당 좌석 중복 배정 확인
                     if (currentSeats[seatNum]) {
-                        throw new Error(`이미 ${currentSeats[seatNum]}에게 배정된 좌석입니다.`);
+                        throw new Error(`이미 ${currentSeats[seatNum].name}에게 배정된 좌석입니다.`);
                     }
 
                     // 2. 학생 중복 배정 확인
-                    const existingSeatNum = Object.keys(currentSeats).find(key => currentSeats[key] === name);
+                    const existingSeatNum = Object.keys(currentSeats).find(key => currentSeats[key].name === name);
                     if (existingSeatNum) {
                         throw new Error(`${name}님은 이미 ${existingSeatNum}번 좌석을 배정받았습니다.`);
                     }
 
-                    // 3. 배정 및 업데이트
-                    const newSeats = { ...currentSeats, [seatNum]: name };
+                    // 3. 배정 및 업데이트 (이름과 비밀번호 저장)
+                    const newSeats = { ...currentSeats, [seatNum]: { name: name, password: password } };
                     transaction.update(docRef, { seats: newSeats }); 
                 });
 
                 showMessage(`${name}님, ${seatNum}번 좌석 배정 완료!`, 'success');
+                // 배정 성공 시 이름과 비밀번호를 유지 (3번 조건 충족)
                 
             } catch (e) {
+                // 3. 자리 선택 실패 시, 이름과 비밀번호는 지워지지 않은 채로 유지 (UI 상태 그대로)
                 if (e.message.includes("이미")) {
                      showMessage(e.message, 'error');
                 } else {
@@ -417,7 +499,7 @@
                 // 배정된 좌석 (관리자 모드 시 취소 가능하도록 빨간색 호버 효과 추가)
                 return adminMode 
                     ? 'bg-blue-600 text-white hover:bg-red-500 cursor-pointer shadow-xl' 
-                    : 'bg-blue-600 text-white cursor-default shadow-xl'; 
+                    : 'bg-blue-600 text-white cursor-pointer shadow-xl'; // 학생은 취소 모달로 유도하기 위해 cursor-pointer 유지
             }
             
             // 처리 중이거나 티켓팅이 활성화되지 않은 경우
@@ -460,11 +542,11 @@
                   </div>
                 )}
 
-                {/* 확인 모달 (Confirm Modal) */}
+                {/* 확인 모달 (Confirm Modal - 관리자 전용) */}
                 {showConfirmModal && (
                   <div className="fixed inset-0 bg-black bg-opacity-60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
                     <div className="bg-white rounded-xl p-8 max-w-lg w-full shadow-2xl">
-                      <h2 className="text-2xl font-extrabold text-gray-800 mb-4">⚠️ 확인 필요</h2>
+                      <h2 className="text-2xl font-extrabold text-gray-800 mb-4">⚠️ 관리자 확인 필요</h2>
                       <p className="text-gray-700 mb-8 leading-relaxed">{confirmMessage}</p>
                       <div className="flex gap-4">
                         <button
@@ -484,6 +566,16 @@
                   </div>
                 )}
 
+                {/* 학생 좌석 취소 모달 (Student Cancel Modal - 2번, 4번, 5번 조건) */}
+                {showStudentCancelModal && (
+                  <StudentCancelModal
+                      seatNum={cancelSeatNum}
+                      seatData={seats[cancelSeatNum]}
+                      onCancel={handleStudentSeatCancel}
+                      onClose={() => {setShowStudentCancelModal(false); setCancelSeatNum(null);}}
+                  />
+                )}
+
                 {/* 비밀번호 모달 (Admin Login Modal) */}
                 {showPasswordModal && (
                   <div className="fixed inset-0 bg-black bg-opacity-60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
@@ -491,8 +583,8 @@
                       <h2 className="text-2xl font-bold text-gray-800 mb-5">관리자 인증</h2>
                       <input
                         type="password"
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
+                        value={adminPassword}
+                        onChange={(e) => setAdminPassword(e.target.value)}
                         onKeyPress={(e) => e.key === 'Enter' && handlePasswordSubmit()}
                         placeholder="비밀번호를 입력하세요"
                         className="w-full px-5 py-3 border-2 border-indigo-400 rounded-xl focus:ring-4 focus:ring-indigo-300 focus:border-indigo-500 mb-6 text-lg"
@@ -506,7 +598,7 @@
                           로그인
                         </button>
                         <button
-                          onClick={() => { setShowPasswordModal(false); setPassword(''); }}
+                          onClick={() => { setShowPasswordModal(false); setAdminPassword(''); }}
                           className="flex-1 px-4 py-3 bg-gray-300 text-gray-700 rounded-xl font-bold hover:bg-gray-400 transition"
                         >
                           닫기
@@ -601,25 +693,35 @@
                   </div>
                 )}
 
-                {/* 이름 입력 */}
+                {/* 이름 및 비밀번호 입력 (1번 조건) */}
                 <div className="bg-white rounded-2xl shadow-xl p-6 mb-8">
-                    <label className="block text-xl font-bold text-gray-800 mb-4">
-                        🙋 이름을 정확히 입력하세요! (예: 홍길동)
+                    <label className="block text-xl font-bold text-gray-800 mb-3">
+                        🙋 이름을 정확히 입력하세요!
                     </label>
                     <input
                         type="text"
                         value={studentName}
                         onChange={(e) => setStudentName(e.target.value)}
-                        placeholder={isTicketingLive 
-                            ? "여기에 이름을 입력하고 좌석을 선택하세요." 
-                            : "이름을 미리 입력하세요."
-                        }
+                        placeholder="이름을 입력하고 좌석을 선택하세요."
                         disabled={isNameInputDisabled}
-                        className="w-full px-5 py-3 text-xl border-2 border-indigo-400 rounded-xl focus:ring-4 focus:ring-indigo-300 focus:border-indigo-500 disabled:bg-gray-100 disabled:text-gray-500 transition"
+                        className="w-full px-5 py-3 text-xl border-2 border-indigo-400 rounded-xl focus:ring-4 focus:ring-indigo-300 focus:border-indigo-500 disabled:bg-gray-100 disabled:text-gray-500 transition mb-6"
                     />
+
+                    <label className="block text-xl font-bold text-gray-800 mb-3">
+                        🔑 비밀번호를 입력하세요. (자리 취소 시 필요)
+                    </label>
+                    <input
+                        type="password"
+                        value={studentPassword}
+                        onChange={(e) => setStudentPassword(e.target.value)}
+                        placeholder="자리 취소에 사용할 비밀번호 (숫자, 영문 등)"
+                        disabled={isNameInputDisabled}
+                        className="w-full px-5 py-3 text-xl border-2 border-pink-400 rounded-xl focus:ring-4 focus:ring-pink-300 focus:border-pink-500 disabled:bg-gray-100 disabled:text-gray-500 transition"
+                    />
+
                     {hasAssignedSeat && (
                         <p className="mt-4 text-green-600 font-bold text-lg">
-                            ✅ 좌석 배정 성공! ({Object.keys(seats).find(key => seats[key] === studentName.trim())}번) 이름 입력란은 비활성화되었습니다.
+                            ✅ 좌석 배정 성공! ({Object.keys(seats).find(key => seats[key].name === studentName.trim())}번) 취소하려면 본인 좌석을 다시 클릭하세요.
                         </p>
                     )}
                     {processing && (
@@ -658,22 +760,24 @@
                                   }
 
                                   const seatNum = seatItem;
+                                  // seats[seatNum]이 이제 객체 {name: string, password: string} 이거나 undefined입니다.
+                                  const seatName = seats[seatNum]?.name;
+                                  
                                   return (
                                     <button
                                       key={seatNum}
-                                      // 좌석 클릭 핸들러: 관리자 모드 시 취소 기능을 포함하도록 handleSeatClick을 호출
                                       onClick={() => handleSeatClick(seatNum)}
-                                      // 버튼 비활성화 조건: 티켓팅 비활성화, 처리 중, 이미 배정됨 (관리자 모드 제외)
-                                      disabled={(!isTicketingLive && !adminMode) || processing || (seats[seatNum] && !adminMode)} 
+                                      // disabled 조건은 handleSeatClick 내부에서 더 세부적으로 처리합니다.
+                                      disabled={(!isTicketingLive && !adminMode) || processing} 
                                       className={`rounded-xl font-extrabold transition-all duration-200 transform shadow-lg text-sm flex flex-col items-center justify-center 
                                         ${getSeatColor(seatNum)}
                                         w-20 h-20 
-                                        ${seats[seatNum] ? (adminMode ? 'hover:scale-105' : 'hover:scale-100') : 'hover:scale-105'}
+                                        ${seatName ? 'hover:scale-105' : 'hover:scale-105'}
                                       `}
                                     >
                                       <div className={`text-xs opacity-70 mb-1`}>{seatNum}번</div>
-                                      <div className={`text-sm mt-1 px-1 truncate w-full ${seats[seatNum] ? 'text-white font-bold' : 'font-semibold'}`}>
-                                        {seats[seatNum] || ''}
+                                      <div className={`text-sm mt-1 px-1 truncate w-full ${seatName ? 'text-white font-bold' : 'font-semibold'}`}>
+                                        {seatName || ''}
                                       </div>
                                     </button>
                                   );
@@ -694,7 +798,7 @@
                   <div className="mt-10 pt-6 border-t border-gray-200 flex flex-wrap justify-center gap-6 text-sm font-semibold">
                     <div className="flex items-center gap-2">
                       <div className="w-6 h-6 bg-gray-200 border border-gray-400 rounded-lg shadow-inner"></div>
-                      <span>준비</span>
+                      <span>준비/비활성</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="w-6 h-6 bg-green-100 border border-green-300 rounded-lg shadow-md"></div>
@@ -702,13 +806,60 @@
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="w-6 h-6 bg-blue-600 rounded-lg shadow-xl"></div>
-                      <span className="text-blue-700">배정 완료</span>
+                      <span className="text-blue-700">배정 완료 (클릭 시 취소)</span>
                         </div>
                   </div>
                 </div>
               </div>
             </div>
           );
+        }
+
+        // --- 학생 취소 모달 컴포넌트 (추가) ---
+        function StudentCancelModal({ seatNum, seatData, onCancel, onClose }) {
+            const [passwordInput, setPasswordInput] = React.useState('');
+            
+            // seatData.name이 존재하지 않을 경우를 대비하여 방어 코드
+            const name = seatData?.name || "알 수 없는 학생";
+
+            return (
+                <div className="fixed inset-0 bg-black bg-opacity-70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+                    <div className="bg-white rounded-xl p-8 max-w-sm w-full shadow-2xl border-t-8 border-pink-500">
+                        <h2 className="text-2xl font-extrabold text-gray-800 mb-3">🔒 좌석 취소 확인</h2>
+                        <p className="text-gray-700 mb-6 text-lg font-medium">
+                            {name}님의 <span className="text-pink-600 font-extrabold">{seatNum}번</span> 좌석 배정을 취소합니다.
+                        </p>
+                        
+                        <label className="block text-md font-bold text-gray-700 mb-2">
+                            자리 배정 시 사용한 비밀번호
+                        </label>
+                        <input
+                            type="password"
+                            value={passwordInput}
+                            onChange={(e) => setPasswordInput(e.target.value)}
+                            onKeyPress={(e) => e.key === 'Enter' && onCancel(passwordInput)}
+                            placeholder="비밀번호 입력"
+                            className="w-full px-4 py-3 border-2 border-pink-300 rounded-xl focus:ring-4 focus:ring-pink-200 focus:border-pink-500 mb-6 text-lg"
+                            autoFocus
+                        />
+
+                        <div className="flex gap-3">
+                            <button
+                                onClick={onClose}
+                                className="flex-1 px-4 py-3 bg-gray-300 text-gray-800 rounded-xl font-bold hover:bg-gray-400 transition transform hover:scale-105"
+                            >
+                                돌아가기
+                            </button>
+                            <button
+                                onClick={() => onCancel(passwordInput)}
+                                className="flex-1 px-4 py-3 bg-pink-600 text-white rounded-xl font-bold hover:bg-pink-700 transition transform hover:scale-105 shadow-lg shadow-pink-300"
+                            >
+                                취소하기
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
         }
 
         // React 앱 렌더링
@@ -719,4 +870,3 @@
     </script>
 </body>
 </html>
-
