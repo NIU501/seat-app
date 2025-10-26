@@ -15,30 +15,42 @@
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;800&display=swap');
         body { font-family: 'Inter', sans-serif; }
+        
+        /* 카운트다운의 극적인 효과를 위한 커스텀 키프레임 */
+        @keyframes dramatic-pulse {
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.1); opacity: 0.8; }
+        }
+        .animate-dramatic-pulse {
+            animation: dramatic-pulse 0.5s ease-in-out infinite alternate;
+        }
     </style>
 </head>
 <body>
     <div id="root"></div>
 
-    <!-- ⭐⭐ Firebase V9 모듈을 로드하고 전역에 노출하는 섹션 (오류 해결 핵심) ⭐⭐ -->
+    <!-- ⭐ Firebase V9 모듈을 로드하고 전역에 노출하는 섹션 (캔버스 환경 필수) ⭐ -->
     <script type="module">
+        
         // ==============================================================================
-        // ⭐⭐ 1. Firebase 설정 (배포 시 수정 필요) ⭐⭐
+        // ⭐ 1. 기본 설정값 정의 (배포/테스트 시 수정 필요) ⭐
         // ==============================================================================
         const MANUAL_FIREBASE_CONFIG = {
-            apiKey: "AIzaSyBjb2xi-Nak45JtXfj51C-jQW-dW3M3zMo", // 실제 키로 변경하세요
+            // 이 값들은 캔버스 환경에서 __firebase_config 변수를 통해 자동 제공되나,
+            // 독립 테스트를 위해 남겨둡니다.
+            apiKey: "AIzaSyBjb2xi-Nak45JtXfj51C-jQW-dW3M3zMo", 
             authDomain: "seat-final.firebaseapp.com",
             projectId: "seat-final",
             storageBucket: "seat-final.firebasestorage.app",
             messagingSenderId: "581734914917",
             appId: "1:581734914917:web:b3e7d7354937d34c55df8c"
         };
-        // ✅ 관리자 비밀번호를 '0501!'로 수정했습니다.
-        const ADMIN_PASSWORD = '0501!'; 
+        const ADMIN_PASSWORD = '0501!'; // 관리자 비밀번호
         const TOTAL_SEATS = 31; // 총 좌석 수
+        const COUNTDOWN_DURATION_MS = 5000; // 카운트다운 딜레이 5초 (5000ms)
         // ==============================================================================
 
-        // Firebase Canvas Global Variables (제공되지 않으면 기본값 사용)
+        // 캔버스 환경 변수 사용 및 대체
         const appId = typeof __app_id !== 'undefined' ? __app_id : MANUAL_FIREBASE_CONFIG.projectId || 'default-app-id';
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : MANUAL_FIREBASE_CONFIG;
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
@@ -60,8 +72,9 @@
         window.initialAuthToken = initialAuthToken;
         window.ADMIN_PASSWORD = ADMIN_PASSWORD;
         window.TOTAL_SEATS = TOTAL_SEATS;
+        window.COUNTDOWN_DURATION_MS = COUNTDOWN_DURATION_MS;
 
-        // V9 함수들을 전역에 노출 (V9 API 직접 사용)
+        // V9 함수들을 전역에 노출
         window.doc = doc;
         window.setDoc = setDoc;
         window.updateDoc = updateDoc;
@@ -74,36 +87,41 @@
 
     <!-- React (Babel) 스크립트: 전역에 노출된 V9 함수들을 사용 -->
     <script type="text/babel">
-        // 전역 변수와 함수를 사용하므로 별도의 import가 필요 없습니다.
         
-        // Firestore 문서 경로 (공개 데이터로 설정)
+        // Firestore 문서 경로 (공개 데이터: /artifacts/{appId}/public/data/config/globalState)
         const globalStateDocPath = `artifacts/${appId}/public/data/config/globalState`;
 
         // --- Seat Assignment Application Component ---
         
         function App() {
-          // 전역 변수 사용 (window.db, window.auth 등)
-          const [isFirebaseReady, setIsFirebaseReady] = React.useState(false);
+          // 관리자 및 인증 상태
           const [adminMode, setAdminMode] = React.useState(false);
           const [password, setPassword] = React.useState('');
           const [showPasswordModal, setShowPasswordModal] = React.useState(false);
           
+          // DB 상태: seats (배정 정보), ticketingActive (관리자 ON/OFF), ticketingStartsAt (카운트다운 시점)
           const [ticketingActive, setTicketingActive] = React.useState(false); 
-          const [seats, setSeats] = React.useState({}); // { seatNum: studentName }
+          const [ticketingStartsAt, setTicketingStartsAt] = React.useState(null); 
+          const [seats, setSeats] = React.useState({}); 
           const [dataLoading, setDataLoading] = React.useState(true);
-
+          
+          // 학생 UI 상태
           const [studentName, setStudentName] = React.useState('');
           const [hasAssignedSeat, setHasAssignedSeat] = React.useState(false);
           const [processing, setProcessing] = React.useState(false);
-          
+          const [selectedSeat, setSelectedSeat] = React.useState(null);
+
+          // 메시지 및 모달 상태
           const [message, setMessage] = React.useState('');
           const [messageType, setMessageType] = React.useState('');
           const [showConfirmModal, setShowConfirmModal] = React.useState(false);
           const [confirmAction, setConfirmAction] = React.useState(null); 
           const [confirmMessage, setConfirmMessage] = React.useState('');
-          const [selectedSeat, setSelectedSeat] = React.useState(null);
 
-          // 좌석 구조 정의 (교실 배치)
+          // 카운트다운 상태 (초)
+          const [countdownSeconds, setCountdownSeconds] = React.useState(null); 
+          
+          // 교실 좌석 구조 정의
           const seatStructure = [
             { section: 1, rows: [[1, 2], [3, 4], [5, 6], [7, 8]] },
             { section: 2, rows: [[9, 10], [11, 12], [13, 14], [15, 16]] },
@@ -118,25 +136,14 @@
 
           // --- Utility Functions ---
 
-          /**
-           * Lucide UMD (Global) Safe Icon Renderer Helper
-           * @param {string} name - 아이콘 이름 (e.g., 'users')
-           * @param {string} className - Tailwind CSS 클래스 (e.g., 'w-10 h-10 text-indigo-600')
-           * @returns {string} 생성된 SVG 문자열
-           */
+          // Lucide 아이콘을 SVG 문자열로 렌더링하는 함수
           const renderLucideIcon = (name, className) => {
-            // Lucide 객체가 없거나 해당 아이콘이 없으면 오류 방지를 위해 대체 텍스트를 주석으로 변경
             if (typeof lucide === 'undefined' || !lucide.icons || typeof lucide.icons[name] !== 'function') {
                 return `<!-- Icon ${name} failed to load -->`;
             }
-
             try {
-                // `lucide.icons[name]`은 아이콘 경로 데이터를 반환하는 함수입니다.
                 const iconFunc = lucide.icons[name];
-                // V9 API: iconFunc()는 경로 데이터를 반환합니다.
                 const pathData = iconFunc(); 
-
-                // SVG 문자열 수동 구성
                 const svgContent = pathData.map(item => {
                     const [tag, attrs] = item;
                     const attrString = Object.entries(attrs).map(([key, value]) => `${key}="${value}"`).join(' ');
@@ -160,6 +167,7 @@
             }
           };
 
+          // 알림 메시지 표시 함수
           const showMessage = (msg, type) => {
             setMessage(msg);
             setMessageType(type);
@@ -182,35 +190,31 @@
               }
 
               try {
-                // ⭐ 인증 처리 ⭐
+                // 인증 처리: 커스텀 토큰 또는 익명 로그인
                 if (window.initialAuthToken) {
                     await window.signInWithCustomToken(window.auth, window.initialAuthToken);
                 } else {
                     await window.signInAnonymously(window.auth);
                 }
-                setIsFirebaseReady(true);
               } catch (error) {
                 console.error("Firebase Authentication failed:", error);
-                setIsFirebaseReady(true);
                 setDataLoading(false);
                 return;
               }
               
-              // ⭐ V9 API: doc 함수 사용 ⭐
               const docRef = window.doc(window.db, globalStateDocPath);
               
               // 실시간 데이터 스냅샷 리스너
-              // ⭐ V9 API: onSnapshot 함수 사용 ⭐
               unsubscribe = window.onSnapshot(docRef, (docSnapshot) => {
                 setDataLoading(false);
                 if (docSnapshot.exists()) {
                   const data = docSnapshot.data();
                   setSeats(data.seats || {});
                   setTicketingActive(!!data.ticketingActive);
+                  setTicketingStartsAt(data.ticketingStartsAt || null); 
                 } else {
                   // 문서가 없으면 초기 상태로 생성
-                  // ⭐ V9 API: setDoc 함수 사용 ⭐
-                  window.setDoc(docRef, { seats: {}, ticketingActive: false }).catch(e => console.error("Initial doc set error:", e));
+                  window.setDoc(docRef, { seats: {}, ticketingActive: false, ticketingStartsAt: null }).catch(e => console.error("Initial doc set error:", e));
                 }
               }, (error) => {
                 console.error("Firestore snapshot error:", error);
@@ -223,7 +227,46 @@
             return () => unsubscribe();
           }, []); 
           
-          // --- Derived State: Check if the current student has a seat ---
+          // --- Countdown Timer Logic ---
+          React.useEffect(() => {
+              let intervalId = null;
+              
+              const checkCountdown = () => {
+                  if (ticketingStartsAt) {
+                      const now = Date.now();
+                      const remaining = ticketingStartsAt - now;
+                      
+                      if (remaining > 0) {
+                          // 남은 시간(초) 계산 및 설정 (올림 처리하여 5, 4, 3... 확실히 보이도록)
+                          setCountdownSeconds(Math.ceil(remaining / 1000));
+                          
+                      } else {
+                          // 카운트다운 종료 (0초)
+                          setCountdownSeconds(0);
+                          if (intervalId) clearInterval(intervalId);
+                      }
+                  } else {
+                      // 티켓팅 시작 시점이 설정되지 않았으면 타이머 해제
+                      setCountdownSeconds(null);
+                      if (intervalId) clearInterval(intervalId);
+                  }
+              };
+
+              // 100ms 마다 체크하여 부드러운 카운트다운 구현
+              checkCountdown(); 
+              intervalId = setInterval(checkCountdown, 100); 
+
+              return () => {
+                  if (intervalId) clearInterval(intervalId);
+              };
+          }, [ticketingStartsAt]);
+
+          // --- Derived State ---
+          
+          // 티켓팅이 실제로 가능한지 여부 (관리자 활성화 && 카운트다운 종료/없음)
+          const isTicketingLive = ticketingActive && (countdownSeconds === null || countdownSeconds <= 0);
+
+          // 이름으로 이미 배정된 좌석이 있는지 확인
           React.useEffect(() => {
               const existingSeat = Object.keys(seats).find(key => seats[key] === studentName.trim());
               setHasAssignedSeat(!!existingSeat);
@@ -246,27 +289,31 @@
           const startTicketing = async () => {
             if (!window.db) return showMessage('DB 연결 실패', 'error');
             try {
-                // ⭐ V9 API: doc, updateDoc 함수 사용 ⭐
+                // 현재 시간으로부터 5초 후 시작하도록 타임스탬프 설정
+                const startTime = Date.now() + window.COUNTDOWN_DURATION_MS;
+                
                 const docRef = window.doc(window.db, globalStateDocPath);
-                await window.updateDoc(docRef, { ticketingActive: true });
-                showMessage('티켓팅이 시작되었습니다!', 'success');
+                await window.updateDoc(docRef, { 
+                    ticketingActive: true, 
+                    ticketingStartsAt: startTime 
+                });
+                showMessage('카운트다운 시작! 5초 후 티켓팅이 시작됩니다!', 'success');
             } catch (e) {
-                // ⭐ 오류 객체를 상세히 로깅합니다. ⭐
-                console.error("Error starting ticketing (Check Firestore Security Rules):", e);
-                showMessage('티켓팅 시작 실패 (콘솔에서 상세 오류 확인)', 'error');
+                console.error("Error starting ticketing:", e);
+                showMessage('티켓팅 시작 실패 (콘솔 오류 확인)', 'error');
             }
           };
 
           const stopTicketing = async () => {
             if (!window.db) return showMessage('DB 연결 실패', 'error');
             try {
-                // ⭐ V9 API: doc, updateDoc 함수 사용 ⭐
                 const docRef = window.doc(window.db, globalStateDocPath);
-                await window.updateDoc(docRef, { ticketingActive: false });
-                showMessage('티켓팅이 종료되었습니다', 'info');
+                // 티켓팅 상태 및 카운트다운 타임스탬프 모두 초기화
+                await window.updateDoc(docRef, { ticketingActive: false, ticketingStartsAt: null });
+                showMessage('티켓팅이 정지되었습니다', 'info');
             } catch (e) {
                 console.error("Error stopping ticketing:", e);
-                showMessage('티켓팅 종료 실패', 'error');
+                showMessage('티켓팅 정지 실패', 'error');
             }
           };
 
@@ -275,16 +322,15 @@
             setConfirmAction(() => async () => {
                 if (!window.db) return showMessage('DB 연결 실패', 'error');
                 try {
-                    // ⭐ V9 API: doc, setDoc 함수 사용 ⭐
                     const docRef = window.doc(window.db, globalStateDocPath);
-                    await window.setDoc(docRef, { seats: {}, ticketingActive: false });
+                    // 모든 상태를 초기화
+                    await window.setDoc(docRef, { seats: {}, ticketingActive: false, ticketingStartsAt: null });
                     setStudentName('');
                     showMessage('초기화가 완료되었습니다', 'info');
                     setShowConfirmModal(false);
                 } catch (e) {
-                    // ⭐ 오류 객체를 상세히 로깅합니다. ⭐
-                    console.error("Error resetting data (Check Firestore Security Rules):", e);
-                    showMessage('초기화 실패 (콘솔에서 상세 오류 확인)', 'error');
+                    console.error("Error resetting data:", e);
+                    showMessage('초기화 실패 (콘솔 오류 확인)', 'error');
                     setShowConfirmModal(false);
                 }
             });
@@ -298,15 +344,13 @@
                 try {
                     const newSeats = { ...seats };
                     delete newSeats[seatNum];
-                    // ⭐ V9 API: doc, updateDoc 함수 사용 ⭐
                     const docRef = window.doc(window.db, globalStateDocPath);
                     await window.updateDoc(docRef, { seats: newSeats });
                     showMessage('좌석 배정이 취소되었습니다', 'info');
                     setShowConfirmModal(false);
                 } catch (e) {
-                    // ⭐ 오류 객체를 상세히 로깅합니다. ⭐
-                    console.error("Error cancelling seat (Check Firestore Security Rules):", e);
-                    showMessage('취소 실패 (콘솔에서 상세 오류 확인)', 'error');
+                    console.error("Error cancelling seat:", e);
+                    showMessage('취소 실패 (콘솔 오류 확인)', 'error');
                     setShowConfirmModal(false);
                 }
             });
@@ -317,6 +361,7 @@
           // --- Student Seat Assignment Logic (Firestore Transaction) ---
 
           const handleSeatClick = async (seatNum) => {
+            // 관리자 모드에서 이미 배정된 좌석 클릭 시 취소 모드로 전환
             if (adminMode && seats[seatNum]) {
               handleAdminSeatCancel(seatNum);
               return;
@@ -324,7 +369,8 @@
             
             if (seatNum === 'EMPTY') return;
 
-            if (!ticketingActive || processing || seats[seatNum]) return;
+            // 티켓팅 가능 여부 및 상태 체크
+            if (!isTicketingLive || processing || seats[seatNum]) return;
             
             const name = studentName.trim();
             if (!name) {
@@ -345,28 +391,28 @@
                 return showMessage('DB 연결 실패. 배정할 수 없습니다.', 'error');
             }
 
-            // ✅ 긴장감을 위한 3초 딜레이 추가
+            // 긴장감을 위한 3초 딜레이
             await new Promise(resolve => setTimeout(resolve, 3000));
             
             const docRef = window.doc(window.db, globalStateDocPath);
 
             try {
-                // ⭐ V9 API: runTransaction 함수 사용 ⭐
+                // Firestore 트랜잭션을 사용하여 동시성 제어
                 await window.runTransaction(window.db, async (transaction) => {
                     const docSnapshot = await transaction.get(docRef); 
                     if (!docSnapshot.exists()) {
-                        throw new Error("데이터베이스 문서가 초기화되지 않았습니다. 잠시 후 다시 시도해주세요.");
+                        throw new Error("데이터베이스 문서가 초기화되지 않았습니다.");
                     }
                     
                     const currentData = docSnapshot.data();
                     const currentSeats = currentData.seats || {};
 
-                    // 1. 해당 좌석이 이미 배정되었는지 확인
+                    // 1. 해당 좌석 중복 배정 확인
                     if (currentSeats[seatNum]) {
                         throw new Error(`이미 ${currentSeats[seatNum]}에게 배정된 좌석입니다.`);
                     }
 
-                    // 2. 이 학생이 이미 다른 좌석을 배정받았는지 확인
+                    // 2. 학생 중복 배정 확인
                     const existingSeatNum = Object.keys(currentSeats).find(key => currentSeats[key] === name);
                     if (existingSeatNum) {
                         throw new Error(`${name}님은 이미 ${existingSeatNum}번 좌석을 배정받았습니다.`);
@@ -398,13 +444,15 @@
             if (seats[seatNum]) {
                 // 배정된 좌석
                 return adminMode 
-                    ? 'bg-blue-600 text-white hover:bg-red-500 cursor-pointer shadow-xl' // 관리자 모드: 취소 가능
-                    : 'bg-blue-600 text-white cursor-default shadow-xl'; // 학생 모드: 선택 불가
+                    ? 'bg-blue-600 text-white hover:bg-red-500 cursor-pointer shadow-xl' 
+                    : 'bg-blue-600 text-white cursor-default shadow-xl'; 
             }
             
-            if (selectedSeat === seatNum && processing) return 'bg-yellow-400 text-gray-900 animate-pulse ring-4 ring-yellow-500 ring-opacity-70';
+            // 카운트다운 중일 때
+            if (countdownSeconds > 0) return 'bg-yellow-100 text-gray-500 cursor-not-allowed shadow-inner opacity-70';
 
-            if (processing || !ticketingActive) return 'bg-gray-200 text-gray-500 cursor-not-allowed shadow-inner';
+            // 처리 중이거나 티켓팅이 활성화되지 않은 경우
+            if (processing || !isTicketingLive) return 'bg-gray-200 text-gray-500 cursor-not-allowed shadow-inner';
 
             // 선택 가능한 좌석
             const baseColor = 'bg-green-100 hover:bg-green-300 text-gray-700';
@@ -417,7 +465,7 @@
             return 'bg-indigo-600';
           };
           
-          const isNameInputDisabled = processing || hasAssignedSeat || dataLoading;
+          const isNameInputDisabled = processing || hasAssignedSeat || dataLoading || countdownSeconds > 0 || !ticketingActive;
           
           // 로딩 상태 표시
           if (dataLoading) {
@@ -436,6 +484,20 @@
 
           return (
             <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 font-sans antialiased">
+              
+              {/* 5초 카운트다운 풀스크린 오버레이 */}
+              {ticketingActive && countdownSeconds > 0 && (
+                  <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-[100] transition-opacity duration-300">
+                      <div className="text-center">
+                          <p className="text-white text-4xl md:text-5xl font-extrabold mb-8 animate-dramatic-pulse">
+                              좌석 선택까지 남은 시간
+                          </p>
+                          <div className="text-red-500 text-[10rem] md:text-[15rem] lg:text-[20rem] font-black leading-none animate-dramatic-pulse">
+                              {countdownSeconds}
+                          </div>
+                      </div>
+                  </div>
+              )}
               
               <div className="max-w-7xl mx-auto">
                 
@@ -501,6 +563,7 @@
                     </div>
                   </div>
                 )}
+                
                 {/* 헤더 및 컨트롤 패널 */}
                 <div className="bg-white rounded-2xl shadow-2xl p-6 mb-8 border-b-4 border-indigo-500">
                   <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
@@ -508,9 +571,16 @@
                       {/* 아이콘: users */}
                       <div dangerouslySetInnerHTML={{ __html: renderLucideIcon('users', 'w-10 h-10 text-indigo-600') }} />
                       <h1 className="text-4xl font-extrabold text-gray-800">실시간 좌석 배치 시스템 (DB 연동)</h1>
-                      {ticketingActive && (
+                      
+                      {/* 상태 표시 */}
+                      {isTicketingLive && (
+                        <span className="bg-green-500 text-white px-4 py-1.5 rounded-full text-sm font-bold animate-pulse shadow-md border-2 border-white">
+                          LIVE 티켓팅 활성화!
+                        </span>
+                      )}
+                      {ticketingActive && countdownSeconds > 0 && (
                         <span className="bg-red-500 text-white px-4 py-1.5 rounded-full text-sm font-bold animate-pulse shadow-md border-2 border-white">
-                          LIVE 티켓팅 중
+                          카운트다운 중! ({countdownSeconds}초 남음)
                         </span>
                       )}
                     </div>
@@ -549,14 +619,16 @@
                   <div className="bg-white rounded-2xl shadow-xl p-6 mb-8 border-l-4 border-green-500">
                     <h2 className="text-xl font-bold text-gray-800 mb-4">관리자 제어판 (DB 연동)</h2>
                     <div className="flex gap-4 flex-wrap">
-                      {!ticketingActive ? (
+                      {/* 카운트다운 중이거나 정지 상태일 때만 시작 버튼 노출 */}
+                      {(!ticketingActive || countdownSeconds > 0) ? ( 
                         <button
                           onClick={startTicketing}
-                          className="flex items-center gap-2 px-6 py-3 bg-green-600 text-white rounded-xl font-bold hover:bg-green-700 transition shadow-lg shadow-green-300 transform hover:scale-105"
+                          className="flex items-center gap-2 px-6 py-3 bg-green-600 text-white rounded-xl font-bold hover:bg-green-700 transition shadow-lg shadow-green-300 transform hover:scale-105 disabled:opacity-50"
+                          disabled={ticketingActive && countdownSeconds > 0} 
                         >
                           {/* 아이콘: play */}
                           <div dangerouslySetInnerHTML={{ __html: renderLucideIcon('play', 'w-5 h-5') }} />
-                          티켓팅 시작
+                          {ticketingActive && countdownSeconds > 0 ? `카운트다운 중...` : '티켓팅 시작 (5초 후)'}
                         </button>
                       ) : (
                         <button
@@ -592,7 +664,7 @@
                         type="text"
                         value={studentName}
                         onChange={(e) => setStudentName(e.target.value)}
-                        placeholder={ticketingActive ? "여기에 이름을 입력하세요" : "티켓팅 시작을 기다리는 중..."}
+                        placeholder={isTicketingLive ? "여기에 이름을 입력하세요" : (countdownSeconds > 0 ? `카운트다운이 종료되면 입력 가능합니다.` : "관리자가 티켓팅을 시작해야 합니다.")}
                         disabled={isNameInputDisabled}
                         className="w-full px-5 py-3 text-xl border-2 border-indigo-400 rounded-xl focus:ring-4 focus:ring-indigo-300 focus:border-indigo-500 disabled:bg-gray-100 disabled:text-gray-500 transition"
                     />
@@ -641,7 +713,8 @@
                                     <button
                                       key={seatNum}
                                       onClick={() => handleSeatClick(seatNum)}
-                                      disabled={!ticketingActive && !adminMode || processing}
+                                      // 버튼 비활성화 조건: 티켓팅 비활성화, 처리 중, 이미 배정됨, 카운트다운 중
+                                      disabled={!isTicketingLive && !adminMode || processing || seats[seatNum] || countdownSeconds > 0} 
                                       className={`rounded-xl font-extrabold transition-all duration-200 transform shadow-lg text-sm flex flex-col items-center justify-center 
                                         ${getSeatColor(seatNum)}
                                         w-20 h-20 
@@ -670,11 +743,15 @@
                   <div className="mt-10 pt-6 border-t border-gray-200 flex flex-wrap justify-center gap-6 text-sm font-semibold">
                     <div className="flex items-center gap-2">
                       <div className="w-6 h-6 bg-gray-200 border border-gray-400 rounded-lg shadow-inner"></div>
-                      <span>선택 불가/처리 중</span>
+                      <span>준비/처리 중</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-6 h-6 bg-yellow-100 border border-yellow-300 rounded-lg shadow-md opacity-70"></div>
+                      <span className="text-yellow-700">카운트다운 중</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="w-6 h-6 bg-green-100 border border-green-300 rounded-lg shadow-md"></div>
-                      <span className="text-green-700">선택 가능</span>
+                      <span className="text-green-700">선택 가능 (LIVE)</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="w-6 h-6 bg-yellow-400 rounded-lg shadow-lg animate-pulse"></div>
